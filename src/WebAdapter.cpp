@@ -4,7 +4,21 @@ WebAdapter webAdapter;
 
 WebAdapter::WebAdapter() : server(nullptr), events(nullptr) {}
 
-void WebAdapter::begin()
+String getContentType(const String& path) {
+    if (path.endsWith(".html.gz")) return "text/html";
+    else if (path.endsWith(".css.gz")) return "text/css";
+    else if (path.endsWith(".js.gz")) return "application/javascript";
+    else if (path.endsWith(".png")) return "image/png";
+    else if (path.endsWith(".jpg")) return "image/jpeg";
+    else if (path.endsWith(".ico")) return "image/x-icon";
+    else if (path.endsWith(".xml")) return "text/xml";
+    else if (path.endsWith(".pdf")) return "application/pdf";
+    else if (path.endsWith(".zip")) return "application/zip";
+    else if (path.endsWith(".woff2.gz")) return "font/woff2";  // Added woff2 MIME type
+    return "text/plain";
+}
+
+void WebAdapter::begin(SDFS sd)
 {
     server = new AsyncWebServer(WEB_SERVER_PORT);
     events = new AsyncEventSource("/events");
@@ -14,6 +28,7 @@ void WebAdapter::begin()
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type, Access-Control-Allow-Headers, Authorization, X-Requested-With");
+
     server->begin();
 
     handleGetState();
@@ -24,13 +39,28 @@ void WebAdapter::begin()
     handleTransmitFromFile();
     handleFilesManagement();
     handleFileUpload();
-    server->onNotFound([](AsyncWebServerRequest *request) { request->send(404, "text/plain", "Not Found"); });
+
+    server->onNotFound([&sd](AsyncWebServerRequest *request) {
+        String path = request->url();
+        String pathWithGz = path + ".gz";
+
+        if (sd.exists(pathWithGz)) {
+            AsyncWebServerResponse *response = request->beginResponse(SD, pathWithGz, getContentType(path));
+            response->addHeader("Content-Encoding", "gzip");
+            response->addHeader("Cache-Control", "max-age=86400");
+            request->send(response);
+        } else if (sd.exists(path)) {
+            request->send(sd, path, getContentType(path));
+        } else {
+            request->send(404, "text/plain", "File Not Found");
+        }
+    });
 }
 
 void WebAdapter::initStatic(SDFS sd)
 {
     if (!staticServed) {
-        server->serveStatic("/", sd, "/HTML").setDefaultFile("index.html");
+        server->serveStatic("/", sd, "/HTML").setDefaultFile("index.html").setCacheControl("max-age=86400");
         staticServed = true;
     }
 }

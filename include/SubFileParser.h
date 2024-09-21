@@ -132,7 +132,7 @@ public:
           return false;
       }
       const auto& pulseData = protocol->getPulseData();
-      Serial.println(protocol->serialize().c_str());
+      // Serial.println(protocol->serialize().c_str());
       payload = PulsePayload(pulseData, protocol->getRepeatCount());
 
       return true;

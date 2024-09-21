@@ -13,11 +13,13 @@
 #include "Actions.h"
 #include "AllProtocols.h"
 #include "ClientsManager.h"
+#include "ConfigManager.h"
 #include "DeviceControls.h"
 #include "FS.h"
 #include "SD.h"
 #include "SPI.h"
 #include "SerialAdapter.h"
+#include "ServiceMode.h"
 #include "WebAdapter.h"
 #include "config.h"
 #include "esp_log.h"
@@ -40,8 +42,6 @@ SPIClass sdspi(VSPI);
 bool webAdapterStared = false;
 
 // Wifi parameters
-const char* ssid = "Evil Crow RF v2";
-const char* password = "123456789";
 const int wifi_channel = 12;
 
 // Device settings
@@ -134,7 +134,7 @@ void taskProcessor(void* pvParameters)
 {
     if (ControllerAdapter::xTaskQueue == nullptr) {
         ESP_LOGE(TAG, "Task queue not found");
-        vTaskDelete(nullptr); // Remove task
+        vTaskDelete(nullptr);  // Remove task
     }
     QueueItem* item;
     while (true) {
@@ -188,8 +188,9 @@ void onWiFiEvent(WiFiEvent_t event)
             case ARDUINO_EVENT_WIFI_AP_START:
                 xEventGroupSetBits(wifiEventGroup, WIFI_AP_STARTED_BIT);
                 break;
+            case ARDUINO_EVENT_WIFI_STA_CONNECTED:
             case ARDUINO_EVENT_WIFI_AP_STACONNECTED:
-                webAdapter.initStatic(SD);
+                // webAdapter.initStatic(SD);
                 break;
             default:
                 break;
@@ -202,10 +203,25 @@ void onWiFiEvent(WiFiEvent_t event)
 
 void setup()
 {
+    ESP_LOGD(TAG, "Starting SPIFFS");
+    if (!SPIFFS.begin(false)) {
+        ESP_LOGE(TAG, "SPIFFS mount failed!");
+        return;
+    }
+
+    String baudRate = ConfigManager::getConfigParam("serial_baud_rate");
+    Serial.begin(baudRate.isEmpty() ? SERIAL_BAUDRATE : baudRate.toInt());
+
+    ConfigManager::createDefaultConfig();
+
     DeviceControls::setup();
     DeviceControls::onLoadPowerManagement();
+    DeviceControls::onLoadServiceMode();
 
-    Serial.begin(SERIAL_BAUDRATE);
+    if (ConfigManager::isServiceMode()) {
+        ServiceMode::serviceModeStart();
+        return;
+    }
 
     ESP_LOGD(TAG, "Starting setup...");
 
@@ -277,28 +293,52 @@ void setup()
     }
 
     WiFi.onEvent(onWiFiEvent);
-    WiFi.mode(WIFI_AP);
 
-    int retryCount = 0;
-    while (retryCount < MAX_RETRIES) {
-        WiFi.softAP(ssid, password, wifi_channel, 8);
-        EventBits_t bits = xEventGroupWaitBits(wifiEventGroup, WIFI_AP_STARTED_BIT, pdFALSE, pdTRUE, pdMS_TO_TICKS(10000));
-        if (bits & WIFI_AP_STARTED_BIT) {
-            ESP_LOGD(TAG, "WiFi AP successfully started");
-            break;
+    String ssid = ConfigManager::getConfigParam("ssid");
+    String password = ConfigManager::getConfigParam("password");
+
+    if (ConfigManager::getConfigParam("wifi_mode") == "client") {
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(ssid, password);
+
+        ESP_LOGI(TAG, "Connecting to Wi-Fi ssid: \"%s\" password: \"%s\"", ssid, password);
+        while (WiFi.status() != WL_CONNECTED) {
+            delay(1000);
+            ESP_LOGI(TAG, ".");
+        }
+        ESP_LOGI(TAG, "Connected to the Wi-Fi network!");
+        ESP_LOGI(TAG, "IP Address: %s", WiFi.localIP().toString());
+
+        webAdapter.begin(SD);
+        clients.addAdapter(&webAdapter);
+    } else {
+        WiFi.mode(WIFI_AP);
+        WiFi.setSleep(false);
+
+        int retryCount = 0;
+        while (retryCount < MAX_RETRIES) {
+            Serial.println(ssid);
+            Serial.println(password);
+            WiFi.softAP(ssid, password, wifi_channel, 8);
+            EventBits_t bits = xEventGroupWaitBits(wifiEventGroup, WIFI_AP_STARTED_BIT, pdFALSE, pdTRUE, pdMS_TO_TICKS(10000));
+            if (bits & WIFI_AP_STARTED_BIT) {
+                ESP_LOGD(TAG, "WiFi AP successfully started");
+                break;
+            } else {
+                ESP_LOGE(TAG, "Failed to start WiFi AP, retrying...");
+                retryCount++;
+            }
+        }
+
+        if (retryCount == MAX_RETRIES) {
+            ESP_LOGE(TAG, "Failed to start WiFi AP after maximum retries");
         } else {
-            ESP_LOGE(TAG, "Failed to start WiFi AP, retrying...");
-            retryCount++;
+            webAdapter.begin(SD);
+            clients.addAdapter(&webAdapter);
         }
     }
 
-    if (retryCount == MAX_RETRIES) {
-        ESP_LOGE(TAG, "Failed to start WiFi AP after maximum retries");
-    } else {
-        webAdapter.begin();
-        clients.addAdapter(&webAdapter);
-    }
-
+    webAdapter.initStatic(SD);
     ESP_LOGD(TAG, "Starting scheduler...");
     vTaskStartScheduler();
 }

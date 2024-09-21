@@ -11,21 +11,29 @@ void DeviceControls::setup()
 
 void DeviceControls::onLoadPowerManagement()
 {
-    EEPROM.begin(EEPROM_SIZE);
-    byte deepSleepSavedState = EEPROM.read(DEEP_SLEEP_STATE_ADDRESS);
-
-    if (digitalRead(BUTTON2) != LOW) {
-        if (deepSleepSavedState == DEEP_SLEEP_STATE_ON) {
+    if (digitalRead(BUTTON2) != LOW && digitalRead(BUTTON1) == LOW) {
+        if (ConfigManager::isSleepMode()) {
             goDeepSleep();
         }
-    } else {
-        if (deepSleepSavedState == DEEP_SLEEP_STATE_OFF) {
-            EEPROM.write(DEEP_SLEEP_STATE_ADDRESS, DEEP_SLEEP_STATE_ON);
-            EEPROM.commit();
+    }
+
+    if (digitalRead(BUTTON2) == LOW && digitalRead(BUTTON1) == HIGH) {
+        if (!ConfigManager::isSleepMode()) {
+            ConfigManager::setSleepMode(1);
             goDeepSleep();
         } else {
-            EEPROM.write(DEEP_SLEEP_STATE_ADDRESS, DEEP_SLEEP_STATE_OFF);
-            EEPROM.commit();
+            ConfigManager::setSleepMode(0);
+        }
+    }
+}
+
+void DeviceControls::onLoadServiceMode()
+{
+    if (digitalRead(BUTTON1) == LOW && digitalRead(BUTTON2) == LOW) {
+        if (!ConfigManager::isServiceMode()) {
+            ConfigManager::setServiceMode(1);
+        } else {
+            ConfigManager::setServiceMode(0);
         }
     }
 }

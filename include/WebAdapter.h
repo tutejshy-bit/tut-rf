@@ -9,6 +9,7 @@
 #include "ControllerAdapter.h"
 #include "ModuleCc1101.h"
 #include "FilesManager.h"
+#include "Update.h"
 
 class WebAdapter: public ControllerAdapter
 {
@@ -16,7 +17,7 @@ public:
   WebAdapter();
 
   void notify(String type, std::string message) override;
-  void begin();
+  void begin(SDFS sd);
   void initStatic(SDFS sd);
 
   String getName() override {
