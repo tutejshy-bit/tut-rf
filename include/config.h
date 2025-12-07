@@ -2,6 +2,13 @@
 
 #define CC1101_NUM_MODULES 2
 
+// Modulation types
+#define MODULATION_2_FSK 0
+#define MODULATION_GFSK 1
+#define MODULATION_ASK_OOK 2
+#define MODULATION_4_FSK 3
+#define MODULATION_MSK 4
+
 #define samplesize 2000
 
 #if defined(ESP8266)

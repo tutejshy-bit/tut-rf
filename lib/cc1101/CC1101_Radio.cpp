@@ -622,6 +622,16 @@ byte CC1101_Radio::getMode(void){
 return trxstate[currentModule];
 }
 /****************************************************************
+*FUNCTION NAME:getModeForModule
+*FUNCTION     :Return the Mode for a specific module. Sidle = 0, TX = 1, Rx = 2.
+*INPUT        :module: The module index to get the mode for.
+*OUTPUT       :The mode of the specified module.
+****************************************************************/
+byte CC1101_Radio::getModeForModule(int module) const {
+    extern byte trxstate[];
+    return trxstate[module];
+}
+/****************************************************************
 *FUNCTION NAME:Set Sync_Word
 *FUNCTION     :Sync Word
 *INPUT        :none
@@ -756,7 +766,7 @@ SpiWriteReg(CC1101_PKTLEN, v);
 *OUTPUT       :none
 ****************************************************************/
 void CC1101_Radio::setDcFilterOff(bool v){
-dcOffFlag[currentModule] == v;
+dcOffFlag[currentModule] = v;
 Split_MDMCFG2();
 m2DCOFF[currentModule] = 0;
 if (v==1){m2DCOFF[currentModule]=128;}

@@ -12,10 +12,11 @@ public:
     static void initializeQueue();
     virtual void notify(String type, std::string message) = 0;
     virtual String getName() = 0;
+    virtual bool isConnected() const { return false; }  // Default: not connected
     static QueueHandle_t xTaskQueue;
 
     template <typename T>
-    bool sendTask(T&& task) {
+    static bool sendTask(T&& task) {
         QueueItem* item = new QueueItem(std::move(task));
 
         if (xQueueSend(xTaskQueue, &item, portMAX_DELAY) != pdPASS) {

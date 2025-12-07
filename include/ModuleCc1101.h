@@ -10,6 +10,7 @@ typedef unsigned char byte;
 #include <algorithm>  // For std::copy
 #include <array>      // For std::array
 #include "esp_log.h"
+// #include "Cc1101Mode.h" // REMOVED - no longer needed with worker architecture
 
 // CC1101 Settings
 #define MODULE_1 0
@@ -52,6 +53,7 @@ private:
   byte outputPin;
   SemaphoreHandle_t stateChangeSemaphore;
   static SemaphoreHandle_t rwSemaphore;
+  // OperationMode removed - no longer used with worker architecture
 
 public:
   /*
@@ -76,7 +78,11 @@ public:
   ModuleCc1101 initConfig();
   void applySubConfiguration(const uint8_t *byteArray, int length);
   void setTx(float frequency);
+  void setTxWithPreset(float frequency, const uint8_t *presetBytes, int presetLength);
   void sendData(byte *txBuffer, byte size);
+    // setMode/getMode removed - no longer used with worker architecture
+    // void setMode(OperationMode m) { mode = m; }
+    // OperationMode getMode() const { return mode; }
 
   CC1101ModuleConfig getCurrentConfig();
   int getModulation();

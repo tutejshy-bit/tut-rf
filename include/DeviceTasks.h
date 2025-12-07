@@ -55,8 +55,9 @@ struct TaskTransmission: public TaskBase
     std::unique_ptr<int> repeat;
     std::unique_ptr<std::string> data;
     TransmissionConfig config;
+    int pathType = 0; // <--- добавил pathType
 
-    TaskTransmission(TransmissionType t) : TaskBase(TaskType::Transmission), transmissionType(t), config() {
+    TaskTransmission(TransmissionType t) : TaskBase(TaskType::Transmission), transmissionType(t), config(), pathType(0) {
     }
 
     // Delete copy constructor and assignment operator to prevent accidental copying
@@ -121,6 +122,12 @@ class TaskTransmissionBuilder
     TaskTransmissionBuilder& setData(std::string data)
     {
         task.data = std::make_unique<std::string>(std::move(data));
+        return *this;
+    }
+
+    TaskTransmissionBuilder& setPathType(int pt)
+    {
+        task.pathType = pt;
         return *this;
     }
 
@@ -232,6 +239,7 @@ struct TaskFilesManager: public TaskBase
     TaskFilesManagerAction actionType;
     std::string path;
     std::string pathTo;
+    uint8_t pathType = 0;  // 0=/DATA/RECORDS, 1=/DATA/SIGNALS, 2=/DATA/PRESETS, 3=/DATA/TEMP, etc.
 
     TaskFilesManager(TaskFilesManagerAction t, std::string p = "", std::string pt = "")
         : TaskBase(TaskType::FilesManager), actionType(t), path(p), pathTo(pt) {}
@@ -308,6 +316,12 @@ class TaskDetectSignalBuilder
     TaskDetectSignalBuilder& setMinRssi(int minRssi)
     {
         task.minRssi = std::make_unique<int>(minRssi);
+        return *this;
+    }
+
+    TaskDetectSignalBuilder& setIsBackground(bool isBackground)
+    {
+        task.background = std::make_unique<bool>(isBackground);
         return *this;
     }
 

@@ -1,16 +1,12 @@
-#include <Argument.h>
-#include <Command.h>
-#include <CommandError.h>
-#include <EEPROM.h>
-#include <SimpleCLI.h>
-#include <StringCLI.h>
-#include <WiFi.h>
-#include <WiFiAP.h>
-#include <WiFiClient.h>
+#include <Arduino.h>
 #include <freertos/event_groups.h>
 #include <freertos/semphr.h>
 #include <sstream>
-#include "Actions.h"
+#include "CommandHandler.h"
+#include "FileCommands.h"
+#include "TransmitterCommands.h"
+#include "RecorderCommands.h"
+#include "StateCommands.h"
 #include "AllProtocols.h"
 #include "ClientsManager.h"
 #include "ConfigManager.h"
@@ -18,31 +14,100 @@
 #include "FS.h"
 #include "SD.h"
 #include "SPI.h"
-#include "SerialAdapter.h"
 #include "ServiceMode.h"
-#include "WebAdapter.h"
+#include "BleAdapter.h"
 #include "config.h"
 #include "esp_log.h"
+#include "ModuleCc1101.h"
+#include "BinaryMessages.h"
+#include "CC1101Worker.h"
 
 static const char* TAG = "Setup";
 
 // Constants
-const int WIFI_AP_STARTED_BIT = BIT0;
 const int MAX_RETRIES = 5;
 
 // Global variables
-EventGroupHandle_t wifiEventGroup;
-SemaphoreHandle_t wifiEventMutex;
-bool webAdapterStarted = false;
-void onWiFiEvent(WiFiEvent_t event);
+bool bleAdapterStarted = false;
+BleAdapter bleAdapter;
 
-SimpleCLI cli;
 SPIClass sdspi(VSPI);
 
-bool webAdapterStared = false;
+// REMOVED - old static task buffers (no longer needed with worker architecture)
+// CC1101Worker uses its own static allocation
 
-// Wifi parameters
-const int wifi_channel = 12;
+// Forward declarations
+void signalRecordedHandler(bool saved, const std::string& filename);
+
+// Heap monitoring helper
+void logHeapStats(const char* context) {
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    size_t minFreeHeap = ESP.getMinFreeHeap();
+    
+    // Calculate fragmentation percentage
+    float fragmentation = 0.0f;
+    if (freeHeap > 0) {
+        fragmentation = 100.0f * (1.0f - (float)largestBlock / (float)freeHeap);
+    }
+    
+    ESP_LOGI("Heap", "[%s] Free: %d, Largest: %d, MinFree: %d, Frag: %.1f%%",
+             context, freeHeap, largestBlock, minFreeHeap, fragmentation);
+    
+    // Warning if fragmentation is high
+    if (fragmentation > 30.0f) {
+        ESP_LOGW("Heap", "High fragmentation detected: %.1f%%", fragmentation);
+    }
+    
+    // Warning if largest block is smaller than task stack sizes
+    if (largestBlock < 4096) {
+        ESP_LOGW("Heap", "Largest block (%d) < RecordTask stack (4096) - would fail with dynamic allocation!", largestBlock);
+    }
+    if (largestBlock < 3072) {
+        ESP_LOGW("Heap", "Largest block (%d) < DetectTask stack (3072) - would fail with dynamic allocation!", largestBlock);
+    }
+}
+
+// Global objects (moved from Actions.cpp)
+ClientsManager& clients = ClientsManager::getInstance();
+
+// REMOVED: deviceModes - no longer needed with worker architecture
+// Cc1101Mode deviceModes[] = {...};
+
+// Handler functions (moved from Actions.cpp)
+void signalRecordedHandler(bool saved, const std::string& filename)
+{
+    // Use stack buffers to avoid temporary string allocations
+    char jsonBuffer[256];
+    if (saved) {
+        snprintf(jsonBuffer, sizeof(jsonBuffer), "{\"filename\":\"%s\"}", filename.c_str());
+        clients.enqueueMessage(NotificationType::SignalRecorded, jsonBuffer);
+    } else {
+        snprintf(jsonBuffer, sizeof(jsonBuffer), "{\"error\":\"Failed to open the file for writing: %s\"}", filename.c_str());
+        clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer);
+    }
+}
+
+// Adapter for CC1101Worker detected signal callback
+void cc1101WorkerSignalDetectedHandler(const CC1101DetectedSignal& signal)
+{
+    ESP_LOGI("Main", "Signal detected: rssi=%d, freq=%.2f, module=%d, isBackground=%d", 
+             signal.rssi, signal.frequency, signal.module, signal.isBackgroundScanner);
+    
+    // Format as JSON and send notification
+    char jsonBuffer[128];
+    snprintf(jsonBuffer, sizeof(jsonBuffer), 
+            "{\"module\":\"%d\",\"frequency\":\"%.2f\",\"rssi\":\"%d\",\"isBackgroundScanner\":%s}", 
+            signal.module, signal.frequency, signal.rssi, signal.isBackgroundScanner ? "true" : "false");
+    clients.enqueueMessage(NotificationType::SignalDetected, std::string(jsonBuffer));
+}
+
+// REMOVED - signalDetectedHandler (Detector functionality moved to CC1101Worker)
+
+// REMOVED - old state machine callback
+// void onStateChange(int module, OperationMode mode, OperationMode previousMode) { }
+
+// BLE parameters - no longer needed
 
 // Device settings
 struct DeviceConfig
@@ -50,85 +115,7 @@ struct DeviceConfig
     bool powerBlink;
 } deviceConfig;
 
-void cc1101StateTask(void* parameters)
-{
-    Cc1101Control* cc1101Control = (Cc1101Control*)parameters;
-    if (cc1101Control == nullptr) {
-        ESP_LOGE(TAG, "cc1101Control is nullptr");
-        vTaskDelete(nullptr);
-    }
-
-    OperationMode event;
-    ModeTaskParameters taskParameters;
-
-    while (true) {
-        if (xQueueReceive(cc1101Control->eventQueue, &event, portMAX_DELAY) == pdPASS) {
-            if (cc1101Control->stateSemaphore == nullptr) {
-                ESP_LOGE(TAG, "stateSemaphore is nullptr");
-                vTaskDelete(nullptr);
-            }
-            xSemaphoreTake(cc1101Control->stateSemaphore, portMAX_DELAY);
-
-            if (cc1101Control->isPreviousMode(OperationMode::RecordSignal) && cc1101Control->recordTaskHandle != nullptr) {
-                xTaskNotifyGive(cc1101Control->recordTaskHandle);
-                if (xSemaphoreTake(moduleCC1101State[cc1101Control->getModule()].getStateChangeSemaphore(), portMAX_DELAY) == pdTRUE) {
-                    cc1101Control->recordTaskHandle = nullptr;
-                }
-            } else if (cc1101Control->isPreviousMode(OperationMode::DetectSignal) && cc1101Control->detectTaskHandle != nullptr) {
-                xTaskNotifyGive(cc1101Control->detectTaskHandle);
-                if (xSemaphoreTake(moduleCC1101State[cc1101Control->getModule()].getStateChangeSemaphore(), portMAX_DELAY) == pdTRUE) {
-                    cc1101Control->detectTaskHandle = nullptr;
-                }
-            }
-
-            ModeTaskParameters* taskParameters = new ModeTaskParameters{.module = cc1101Control->getModule(), .mode = cc1101Control->getCurrentMode()};
-            if (taskParameters == nullptr) {
-                ESP_LOGE(TAG, "Failed to allocate memory for taskParameters");
-                vTaskDelete(nullptr);
-            }
-            Cc1101Mode prevMode = cc1101Control->getPreviousMode();
-            Cc1101Mode currentMode = cc1101Control->getCurrentMode();
-
-            switch (event) {
-                case OperationMode::RecordSignal:
-                    if (xTaskCreate(cc1101Control->getCurrentMode().onModeProcess, "RecordTask", 4096, taskParameters, 1, &cc1101Control->recordTaskHandle) != pdPASS) {
-                        ESP_LOGE(TAG, "Failed to create RecordTask");
-                        delete taskParameters;
-                    }
-                    break;
-
-                case OperationMode::DetectSignal:
-                    if (xTaskCreate(cc1101Control->getCurrentMode().onModeProcess, "DetectTask", 4096, taskParameters, 1, &cc1101Control->detectTaskHandle) != pdPASS) {
-                        ESP_LOGE(TAG, "Failed to create DetectTask");
-                        delete taskParameters;
-                    }
-                    break;
-
-                case OperationMode::Idle:
-                    // Stop the active task
-                    break;
-
-                default:
-                    delete taskParameters;  // Clean up if no task was created
-                    break;
-            }
-
-            Handler::onStateChange(cc1101Control->getModule(), currentMode.getMode(), prevMode.getMode());
-
-            xSemaphoreGive(cc1101Control->stateSemaphore);
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-}
-
-void listenSerial(void* parameter)
-{
-    while (true) {
-        SerialAdapter::getInstance().processQueue();
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-}
+// REMOVED - old state machine task (all code deleted, now using CC1101Worker)
 
 void taskProcessor(void* pvParameters)
 {
@@ -142,62 +129,150 @@ void taskProcessor(void* pvParameters)
             switch (item->type) {
                 case Device::TaskType::Transmission: {
                     Device::TaskTransmission& task = item->transmissionTask;
-                    Action::transmitSignal(task);
+                    ESP_LOGI(TAG, "Processing transmission task for module %d", task.module);
+                    
+                    if (task.filename) {
+                        // Send command to CC1101Worker
+                        int repeat = task.repeat ? *task.repeat : 1;
+                        if (CC1101Worker::transmit(task.module, *task.filename, repeat, task.pathType)) {
+                            std::string response = "{\"type\":\"SignalSent\", \"data\":{\"file\":\"" + *task.filename + "\", \"module\":" + std::to_string(task.module) + "}}";
+                            clients.enqueueMessage(NotificationType::SignalSent, response);
+                        } else {
+                            std::string response = "{\"type\":\"SignalSendingError\", \"error\":\"Failed to queue transmission\", \"file\":\"" + *task.filename + "\"}";
+                            clients.enqueueMessage(NotificationType::SignalSendingError, response);
+                        }
+                    } else {
+                        // Raw transmission
+                        ESP_LOGI(TAG, "Raw transmission not implemented yet");
+                    }
                 } break;
+                
                 case Device::TaskType::Record: {
                     Device::TaskRecord& task = item->recordTask;
-                    Action::recordSignal(task);
+                    ESP_LOGI(TAG, "Processing record task for module %d", task.module ? *task.module : 0);
+                    
+                    if (task.module) {
+                        int module = *task.module;
+                        std::string errorMessage;
+                        
+                        float frequency = task.config.frequency;
+                        int modulation = MODULATION_ASK_OOK;
+                        float deviation = 2.380371;
+                        float bandwidth = 650;
+                        float dataRate = 3.79372;
+                        std::string preset = "Ook650";
+                        
+                        // Check if preset is provided
+                        if (task.config.preset) {
+                            preset = *task.config.preset;
+                            ESP_LOGI(TAG, "Applying preset: '%s' (length=%zu)", preset.c_str(), preset.length());
+                            
+                            // Match presets exactly as sent from Flutter app
+                            // Expected values: "Ook270", "Ook650", "2FSKDev238", "2FSKDev476"
+                            if (preset == "Ook270") {
+                                modulation = MODULATION_ASK_OOK;
+                                deviation = 2.380371;
+                                bandwidth = 270.833333;
+                                dataRate = 3.79372;
+                            } else if (preset == "Ook650") {
+                                modulation = MODULATION_ASK_OOK;
+                                deviation = 2.380371;
+                                bandwidth = 650;
+                                dataRate = 3.79372;
+                            } else if (preset == "2FSKDev238") {
+                                modulation = MODULATION_2_FSK;
+                                deviation = 2.380371;
+                                bandwidth = 270.833333;
+                                dataRate = 4.79794;
+                            } else if (preset == "2FSKDev476") {
+                                modulation = MODULATION_2_FSK;
+                                deviation = 47.60742;
+                                bandwidth = 270.833333;
+                                dataRate = 4.79794;
+                            } else {
+                                errorMessage = "{\"error\":\"Can not apply record configuration. Unsupported preset " + preset + "\"}";
+                                ESP_LOGE(TAG, "Unsupported preset: %s", preset.c_str());
+                            }
+                        } else {
+                            // Use custom parameters
+                            modulation = task.config.modulation ? *task.config.modulation : MODULATION_ASK_OOK;
+                            bandwidth = task.config.rxBandwidth ? *task.config.rxBandwidth : 650;
+                            deviation = task.config.deviation ? *task.config.deviation : 47.60742;
+                            dataRate = task.config.dataRate ? *task.config.dataRate : 4.79794;
+                            preset = "Custom";
+                        }
+                        
+                        if (errorMessage.empty()) {
+                            // Send command to CC1101Worker
+                            if (CC1101Worker::startRecord(module, frequency, modulation, deviation, bandwidth, dataRate, preset)) {
+                                ESP_LOGI(TAG, "Recording started on module %d", module);
+                            } else {
+                                clients.enqueueMessage(NotificationType::SignalRecordError, "{\"error\":\"Failed to start recording\"}");
+                            }
+                        } else {
+                            clients.enqueueMessage(NotificationType::SignalRecordError, errorMessage);
+                        }
+                    }
                 } break;
+                
                 case Device::TaskType::DetectSignal: {
                     Device::TaskDetectSignal& task = item->detectSignalTask;
-                    Action::detectSignal(task);
+                    
+                    if (task.module && task.minRssi) {
+                        int minRssi = *task.minRssi;
+                        int module = *task.module;
+                        bool isBackground = task.background ? *task.background : false;
+                        
+                        // Send command to CC1101Worker
+                        if (CC1101Worker::startDetect(module, minRssi, isBackground)) {
+                            ESP_LOGI(TAG, "Detection started on module %d", module);
+                        } else {
+                            ESP_LOGE(TAG, "Failed to start detection on module %d", module);
+                        }
+                    }
                 } break;
-                case Device::TaskType::FilesManager: {
-                    Device::TaskFilesManager& task = item->filesManagerTask;
-                    Action::fileOperator(task);
-                } break;
-                case Device::TaskType::FileUpload: {
-                    Device::TaskFileUpload& task = item->fileUploadTask;
-                    Action::fileUpload(task);
-                } break;
+                
                 case Device::TaskType::GetState: {
                     Device::TaskGetState& task = item->getStateTask;
-                    Action::getCurrentState(task);
+                    ESP_LOGI(TAG, "Processing get state task");
+                    
+                    const byte numRegs = 0x2E;
+
+                    // Create BinaryStatus structure with CC1101 registers
+                    BinaryStatus status;
+                    status.messageType = MSG_STATUS;
+                    status.module0Mode = static_cast<uint8_t>(CC1101Worker::getState(0));
+                    status.module1Mode = static_cast<uint8_t>(CC1101Worker::getState(1));
+                    status.numRegisters = numRegs; // 0x00 to 0x2E (46 registers)
+                    status.freeHeap = ESP.getFreeHeap();
+                    
+                    // Read all CC1101 registers for both modules
+                    moduleCC1101State[0].readAllConfigRegisters(status.module0Registers, numRegs);
+                    moduleCC1101State[1].readAllConfigRegisters(status.module1Registers, numRegs);
+                    
+                    // Send binary status
+                    clients.notifyAllBinary(NotificationType::State, reinterpret_cast<const uint8_t*>(&status), sizeof(BinaryStatus));
                 } break;
+                
                 case Device::TaskType::Idle: {
                     Device::TaskIdle& task = item->idleTask;
-                    Action::idle(task);
+                    ESP_LOGI(TAG, "Processing idle task for module %d", task.module);
+                    
+                    // Send command to CC1101Worker
+                    if (CC1101Worker::goIdle(task.module)) {
+                        ESP_LOGI(TAG, "Module %d set to idle", task.module);
+                    } else {
+                        ESP_LOGE(TAG, "Failed to set module %d to idle", task.module);
+                    }
                 } break;
                 default:
                     break;
             }
+            
+            // CRITICAL: Delete the QueueItem after processing to prevent memory leak
+            delete item;
         }
         vTaskDelay(pdMS_TO_TICKS(10));
-    }
-}
-
-void onWiFiEvent(WiFiEvent_t event)
-{
-    if (wifiEventGroup == NULL || wifiEventMutex == NULL) {
-        ESP_LOGE(TAG, "WiFi event group or mutex is NULL");
-        return;
-    }
-
-    if (xSemaphoreTake(wifiEventMutex, portMAX_DELAY) == pdTRUE) {
-        switch (event) {
-            case ARDUINO_EVENT_WIFI_AP_START:
-                xEventGroupSetBits(wifiEventGroup, WIFI_AP_STARTED_BIT);
-                break;
-            case ARDUINO_EVENT_WIFI_STA_CONNECTED:
-            case ARDUINO_EVENT_WIFI_AP_STACONNECTED:
-                // webAdapter.initStatic(SD);
-                break;
-            default:
-                break;
-        }
-        xSemaphoreGive(wifiEventMutex);
-    } else {
-        ESP_LOGE(TAG, "Failed to take mutex");
     }
 }
 
@@ -205,8 +280,14 @@ void setup()
 {
     ESP_LOGD(TAG, "Starting SPIFFS");
     if (!SPIFFS.begin(false)) {
-        ESP_LOGE(TAG, "SPIFFS mount failed!");
-        return;
+        ESP_LOGW(TAG, "SPIFFS mount failed, attempting to format...");
+        if (!SPIFFS.begin(true)) {
+            ESP_LOGE(TAG, "SPIFFS format failed!");
+            return;
+        }
+        ESP_LOGI(TAG, "SPIFFS formatted successfully");
+    } else {
+        ESP_LOGI(TAG, "SPIFFS mounted successfully");
     }
 
     String baudRate = ConfigManager::getConfigParam("serial_baud_rate");
@@ -241,104 +322,54 @@ void setup()
         ESP_LOGD(TAG, "Initializing CC1101 module #%d\n", i);
         moduleCC1101State[i].init();
         ESP_LOGD(TAG, "Initializing CC1101 module #%d end \n", i);
-        cc1101Control[i].init(i, deviceModes, OperationMode::Idle);
+        // cc1101Control initialization removed - using workers now
         ESP_LOGD(TAG, "CC1101 module #%d initialized.\n", i);
     }
 
     deviceConfig.powerBlink = true;
 
-    Recorder::init();
-    ESP_LOGD(TAG, "Recorder initialized.");
+    // Initialize CC1101Worker (includes recording functionality moved from Recorder)
+    CC1101Worker::init(cc1101WorkerSignalDetectedHandler, signalRecordedHandler);
+    CC1101Worker::start();
+    ESP_LOGI(TAG, "CC1101Worker initialized and started");
 
-    for (int i = 0; i < CC1101_NUM_MODULES; i++) {
-        char taskName[20];
-        snprintf(taskName, sizeof(taskName), "cc1101StateTask%d", i);
-        if (cc1101Control[i].eventQueue == nullptr || cc1101Control[i].stateSemaphore == nullptr) {
-            ESP_LOGE(TAG, "Error: Failed to initialize cc1101Control members");
-            return;
-        }
-        xTaskCreate(cc1101StateTask, taskName, 2048, &cc1101Control[i], 1, NULL);
-        ESP_LOGD(TAG, "Task %s created.\n", taskName);
-    }
+    // Old state machine initialization REMOVED
+    // Workers are now responsible for CC1101 operations
 
-    xTaskCreate(taskProcessor, "TaskProcessor", 25600, NULL, 1, NULL);
+    // BALANCED: TaskProcessor needs more stack for fileOperator ostringstream
+    xTaskCreate(taskProcessor, "TaskProcessor", 8192, NULL, 1, NULL);  // 8KB - баланс между памятью и надежностью
     ESP_LOGD(TAG, "TaskProcessor task created.");
 
     ClientsManager& clients = ClientsManager::getInstance();
     clients.initializeQueue(NOTIFICATIONS_QUEUE);
     ESP_LOGD(TAG, "ClientsManager initialized.");
+    
+    // Инициализация CommandHandler и регистрация команд
+    ESP_LOGI(TAG, "Initializing CommandHandler...");
+    
+    // Регистрируем все команды
+    StateCommands::registerCommands(commandHandler);
+    FileCommands::registerCommands(commandHandler);
+    TransmitterCommands::registerCommands(commandHandler);
+    RecorderCommands::registerCommands(commandHandler);
+    
+    ESP_LOGI(TAG, "CommandHandler initialized with %zu commands", commandHandler.getCommandCount());
 
-    xTaskCreate(ClientsManager::processMessageQueue, "SendNotifications", 2048, NULL, 1, NULL);
+    xTaskCreate(ClientsManager::processMessageQueue, "SendNotifications", 3072, NULL, 1, NULL); // 3KB
     ESP_LOGD(TAG, "SendNotifications task created.");
+    
+    // Initialize BLE adapter instead of WiFi
+    bleAdapter.begin();
+    bleAdapter.setCommandHandler(&commandHandler);  // Устанавливаем CommandHandler
+    clients.addAdapter(&bleAdapter);
+    bleAdapterStarted = true;
+    ESP_LOGD(TAG, "BLE adapter initialized and added to clients.");
 
-    SerialAdapter& serialAdapter = SerialAdapter::getInstance();
-    serialAdapter.setup(cli);
-    serialAdapter.begin();
-    clients.addAdapter(&serialAdapter);
-    ESP_LOGD(TAG, "Serial adapter initialized and added to clients.");
+    // Log initial heap state - baseline for comparison
+    ESP_LOGI(TAG, "===== INITIAL HEAP STATE (using static task allocation) =====");
+    logHeapStats("Setup complete");
+    ESP_LOGI(TAG, "NOTE: Heap stats should remain stable even after many task create/delete cycles!");
 
-    xTaskCreate(listenSerial, "ListenSerial", 4096, NULL, 1, NULL);
-    ESP_LOGD(TAG, "ListenSerial task created.");
-
-    wifiEventGroup = xEventGroupCreate();
-    if (wifiEventGroup == NULL) {
-        ESP_LOGE(TAG, "Failed to create wifi event group");
-        return;
-    }
-
-    wifiEventMutex = xSemaphoreCreateMutex();
-    if (wifiEventMutex == NULL) {
-        ESP_LOGE(TAG, "Failed to create wifi event mutex");
-        return;
-    }
-
-    WiFi.onEvent(onWiFiEvent);
-
-    String ssid = ConfigManager::getConfigParam("ssid");
-    String password = ConfigManager::getConfigParam("password");
-
-    if (ConfigManager::getConfigParam("wifi_mode") == "client") {
-        WiFi.mode(WIFI_STA);
-        WiFi.begin(ssid, password);
-
-        ESP_LOGI(TAG, "Connecting to Wi-Fi ssid: \"%s\" password: \"%s\"", ssid, password);
-        while (WiFi.status() != WL_CONNECTED) {
-            delay(1000);
-            ESP_LOGI(TAG, ".");
-        }
-        ESP_LOGI(TAG, "Connected to the Wi-Fi network!");
-        ESP_LOGI(TAG, "IP Address: %s", WiFi.localIP().toString());
-
-        webAdapter.begin(SD);
-        clients.addAdapter(&webAdapter);
-    } else {
-        WiFi.mode(WIFI_AP);
-        WiFi.setSleep(false);
-
-        int retryCount = 0;
-        while (retryCount < MAX_RETRIES) {
-            Serial.println(ssid);
-            Serial.println(password);
-            WiFi.softAP(ssid, password, wifi_channel, 8);
-            EventBits_t bits = xEventGroupWaitBits(wifiEventGroup, WIFI_AP_STARTED_BIT, pdFALSE, pdTRUE, pdMS_TO_TICKS(10000));
-            if (bits & WIFI_AP_STARTED_BIT) {
-                ESP_LOGD(TAG, "WiFi AP successfully started");
-                break;
-            } else {
-                ESP_LOGE(TAG, "Failed to start WiFi AP, retrying...");
-                retryCount++;
-            }
-        }
-
-        if (retryCount == MAX_RETRIES) {
-            ESP_LOGE(TAG, "Failed to start WiFi AP after maximum retries");
-        } else {
-            webAdapter.begin(SD);
-            clients.addAdapter(&webAdapter);
-        }
-    }
-
-    webAdapter.initStatic(SD);
     ESP_LOGD(TAG, "Starting scheduler...");
     vTaskStartScheduler();
 }

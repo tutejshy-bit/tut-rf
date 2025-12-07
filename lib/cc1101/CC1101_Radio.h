@@ -158,6 +158,8 @@ public:
   void setClb(byte b, byte s, byte e);
   bool getCC1101(void);
   byte getMode(void);
+  // Возвращает режим любого модуля по индексу (SIDLE=0)
+  byte getModeForModule(int module) const;
   void setSyncWord(byte sh, byte sl);
   void setAddr(byte v);
   void setWhiteData(bool v);

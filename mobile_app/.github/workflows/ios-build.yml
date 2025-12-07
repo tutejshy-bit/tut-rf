@@ -1,0 +1,38 @@
+name: iOS Build
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.19.0'
+        channel: 'stable'
+    
+    - name: Install iOS dependencies
+      run: |
+        cd mobile_app
+        flutter pub get
+    
+    - name: Build iOS
+      run: |
+        cd mobile_app
+        flutter build ios --release --no-codesign
+    
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: ios-build
+        path: mobile_app/build/ios/iphoneos/Runner.app
+

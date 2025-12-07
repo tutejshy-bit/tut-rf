@@ -18,6 +18,8 @@ enum class NotificationType
     ModeSwitch,
     FileSystem,
     FileUpload,
+    FrequencySearchStarted,
+    FrequencySearchError,
     Unknown
 };
 
@@ -42,6 +44,10 @@ inline const String NotificationTypeToString(NotificationType v)
             return "FileUpload";
         case NotificationType::State:
             return "State";
+        case NotificationType::FrequencySearchStarted:
+            return "FrequencySearchStarted";
+        case NotificationType::FrequencySearchError:
+            return "FrequencySearchError";
         default:
             return "Unknown";
     }
@@ -50,10 +56,24 @@ inline const String NotificationTypeToString(NotificationType v)
 struct Notification
 {
     NotificationType type;
-    std::string message;
+    char textBuffer[256];  // Static buffer for text messages (keep small - files sent directly)
+    uint8_t binaryData[128];  // Static buffer for binary messages
+    size_t messageLength;
+    bool isBinary;
 
-    Notification() : type(NotificationType::Unknown), message("") {}
-    Notification(NotificationType t, std::string m) : type(t), message(m) {}
+    Notification() : type(NotificationType::Unknown), messageLength(0), isBinary(false) {
+        textBuffer[0] = '\0';
+        memset(binaryData, 0, sizeof(binaryData));
+    }
+    
+    // Get message as std::string (only when needed for backward compatibility)
+    std::string getMessage() const {
+        if (isBinary) {
+            return std::string(reinterpret_cast<const char*>(binaryData), messageLength);
+        } else {
+            return std::string(textBuffer);
+        }
+    }
 };
 
 class ClientsManager
@@ -63,12 +83,16 @@ class ClientsManager
 
     void addAdapter(ControllerAdapter* adapter);
     void removeAdapter(const std::string& name);
-    void notifyAll(NotificationType type, std::string message);
-    void notifyByName(const std::string& name, NotificationType type, std::string message);
+    void notifyAll(NotificationType type, const std::string& message);
+    void notifyAllBinary(NotificationType type, const uint8_t* data, size_t length);
+    void notifyByName(const std::string& name, NotificationType type, const std::string& message);
     void initializeQueue(size_t queueSize);
 
     bool enqueueMessage(NotificationType, const std::string& message);
     static void processMessageQueue(void *taskParameters);
+
+    // Get count of connected clients across all adapters
+    size_t getConnectedCount() const;
 
   private:
     ClientsManager();

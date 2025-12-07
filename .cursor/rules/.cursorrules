@@ -1,0 +1,302 @@
+# ESP32 CC1101 BLE Controller - Cursor AI Rules
+
+You are a senior developer and a senior flutter developer.
+
+Create document only if i ask you to.
+Do not create documents if i ask you to not create them.
+Make result compact and to the point.
+
+## 🎯 Project Context
+
+This is an ESP32-based RF communication project using CC1101 radio module with BLE connectivity and a Flutter mobile app. The project handles SubGhz protocols (similar to Flipper Zero), file management, signal recording/transmission, and real-time communication.
+
+## 📋 Core Principles
+
+### 1. Memory Safety (CRITICAL)
+- **ALWAYS** check for heap corruption risks before allocating memory
+- **ALWAYS** validate pointer dereferencing with null checks
+- **ALWAYS** use stack memory conservatively (ESP32 has limited stack)
+- **NEVER** allocate large buffers on stack (>2KB is risky)
+- **ALWAYS** free allocated memory in the same function or have clear ownership
+- **PREFER** static allocation over dynamic when possible
+- **CHECK** for memory leaks in every change
+- **MONITOR** heap fragmentation in long-running operations
+
+### 2. BLE Protocol Integrity
+- **ALWAYS** follow the binary protocol format: `[Magic:1][Type:1][ChunkID:1][ChunkNum:1][TotalChunks:1][DataLen:1][Data:variable][Checksum:1]`
+- **ALWAYS** validate magic byte (0xAA) before processing packets
+- **ALWAYS** calculate and verify XOR checksums
+- **ALWAYS** handle chunking for responses >200 bytes
+- **NEVER** assume packet integrity without validation
+- **ALWAYS** implement proper error handling (ACK/NAK)
+- **RESPECT** MTU limitations (typically 512 bytes)
+
+### 3. Embedded Development Best Practices
+- **MINIMIZE** Serial.print() in production code (use debug flags)
+- **AVOID** blocking operations in main loop
+- **USE** FreeRTOS tasks for concurrent operations
+- **IMPLEMENT** watchdog timer handling for long operations
+- **PROFILE** memory usage before and after changes
+- **TEST** on actual hardware, not just compilation
+- **HANDLE** WiFi/BLE coexistence issues on ESP32
+
+## 🔧 Code Style & Standards
+
+### C++ (ESP32 Firmware)
+
+#### Memory Management
+```cpp
+// ✅ GOOD - Check before dereferencing
+if (ptr != nullptr) {
+    ptr->doSomething();
+}
+
+// ❌ BAD - Direct dereferencing
+ptr->doSomething();
+
+// ✅ GOOD - Free memory
+char* buffer = (char*)malloc(size);
+// ... use buffer ...
+free(buffer);
+
+// ❌ BAD - Memory leak
+char* buffer = (char*)malloc(size);
+// ... use buffer but never free
+```
+
+#### String Operations
+```cpp
+// ✅ GOOD - Use String class carefully
+String result;
+result.reserve(expectedSize); // Pre-allocate
+result += data;
+
+// ❌ BAD - Multiple reallocations
+String result;
+for (int i = 0; i < 1000; i++) {
+    result += data; // Causes many reallocations
+}
+
+// ✅ BETTER - Use char arrays for fixed-size data
+char buffer[256];
+snprintf(buffer, sizeof(buffer), "Value: %d", value);
+```
+
+#### Error Handling
+```cpp
+// ✅ GOOD - Defensive programming
+bool processCommand(const String& cmd) {
+    if (cmd.isEmpty()) return false;
+    if (!isValidCommand(cmd)) return false;
+    
+    // Process command
+    return true;
+}
+
+// ❌ BAD - Assume everything works
+void processCommand(const String& cmd) {
+    // Direct processing without validation
+    execute(cmd);
+}
+```
+
+### Dart (Flutter Mobile App)
+
+#### Async Operations
+```dart
+// ✅ GOOD - Proper error handling
+Future<void> sendCommand(String cmd) async {
+    try {
+        await bleService.send(cmd);
+    } catch (e) {
+        debugPrint('Send failed: $e');
+        rethrow;
+    }
+}
+
+// ❌ BAD - Silent failure
+Future<void> sendCommand(String cmd) async {
+    await bleService.send(cmd);
+}
+```
+
+#### State Management
+```dart
+// ✅ GOOD - Use ChangeNotifier properly
+class DeviceProvider extends ChangeNotifier {
+    String _status = '';
+    
+    void updateStatus(String newStatus) {
+        if (_status != newStatus) {
+            _status = newStatus;
+            notifyListeners();
+        }
+    }
+}
+
+// ❌ BAD - Unnecessary notifications
+void updateStatus(String newStatus) {
+    _status = newStatus;
+    notifyListeners(); // Even if unchanged
+}
+```
+
+## 🚫 Common Pitfalls to Avoid
+
+### ESP32 Firmware
+1. **Stack Overflow**: Never allocate large arrays on stack
+2. **Heap Fragmentation**: Reuse buffers instead of constant alloc/free
+3. **Blocking BLE**: Don't block in BLE callbacks
+4. **String Concatenation**: Avoid excessive String operations in loops
+5. **Task Priority**: Be careful with task priorities to avoid starvation
+6. **Watchdog**: Handle WDT in long-running operations
+
+### Flutter App
+1. **Memory Leaks**: Always dispose controllers and subscriptions
+2. **Rebuilds**: Minimize unnecessary widget rebuilds
+3. **BLE Disconnection**: Always handle unexpected disconnections
+4. **Platform Code**: Test platform-specific code on actual devices
+5. **State Management**: Don't mix different state management patterns
+
+## 📝 Documentation Requirements
+
+### For Every New Feature
+- **PURPOSE**: What problem does it solve?
+- **PROTOCOL**: If it changes communication, document the protocol
+- **MEMORY**: Document memory requirements and allocations
+- **ERRORS**: Document error conditions and handling
+- **TESTING**: Document how to test the feature
+
+### For Bug Fixes
+- **ROOT CAUSE**: What caused the bug?
+- **SOLUTION**: How does the fix address it?
+- **SIDE EFFECTS**: What else might this affect?
+- **VALIDATION**: How to verify the fix?
+
+## 🧪 Testing Standards
+
+### Before Committing
+1. ✅ Code compiles without warnings
+2. ✅ No new linter errors introduced
+3. ✅ Memory usage profiled (for firmware changes)
+4. ✅ Manual testing on device (if available)
+5. ✅ BLE protocol changes tested with mobile app
+6. ✅ Edge cases considered and handled
+
+### Critical Test Cases
+- **Connection/Disconnection**: Handle gracefully
+- **Large Data**: Test chunking with files >1KB
+- **Rapid Commands**: Test command queuing
+- **Low Memory**: Test behavior under memory pressure
+- **Concurrent Operations**: Test with multiple simultaneous tasks
+
+## 🔍 Code Review Checklist
+
+When reviewing/modifying code, check:
+- [ ] Memory allocation has corresponding deallocation
+- [ ] Pointers validated before dereferencing
+- [ ] Buffer sizes checked before writing
+- [ ] BLE protocol format followed exactly
+- [ ] Error cases handled explicitly
+- [ ] Magic numbers replaced with constants
+- [ ] Comments explain WHY, not WHAT
+- [ ] No debug prints left in production paths
+
+## 📦 File Organization
+
+### ESP32 Firmware Structure
+- `include/`: Header files with class declarations
+- `src/`: Implementation files
+- `lib/`: Reusable libraries (cc1101, subghz, helpers)
+- Documentation: Keep protocol docs in root as `.md` files
+
+### Flutter App Structure
+- `lib/screens/`: UI screens
+- `lib/services/`: Business logic and device communication
+- `lib/providers/`: State management
+- `lib/models/`: Data models
+- `lib/widgets/`: Reusable UI components
+- `lib/transport/`: Communication layer abstraction
+
+## 🎯 Project-Specific Rules
+
+### SubGhz Protocol Handling
+- **ALWAYS** validate frequency before transmission
+- **CHECK** legal frequency bands for target region
+- **IMPLEMENT** transmission timeouts (prevent continuous TX)
+- **VALIDATE** protocol parameters before generating signals
+
+### File Operations
+- **USE** SPIFFS efficiently (it's slow)
+- **CACHE** file lists when possible
+- **CHUNK** large file transfers (>200 bytes per packet)
+- **VALIDATE** file paths to prevent directory traversal
+- **HANDLE** SPIFFS full conditions gracefully
+
+### CC1101 Control
+- **CHECK** module initialization before operations
+- **IMPLEMENT** timeout for radio operations
+- **VALIDATE** configuration values before applying
+- **RESET** module on persistent errors
+
+## 🌐 Internationalization
+- Code comments: English preferred
+- Debug messages: English
+- User-facing strings: Support localization in Flutter app
+- Documentation: Can be English or Russian
+
+## ⚡ Performance Targets
+- **BLE Response Time**: <100ms for simple commands
+- **File List**: <2s for directories with <100 files
+- **Signal Transmission**: Start within 500ms
+- **UI Responsiveness**: 60fps, no janky animations
+- **Memory Usage**: Keep heap fragmentation <20%
+
+## 🔐 Security Considerations
+- **Validate** all user inputs
+- **Sanitize** file paths
+- **Limit** transmission power and duration
+- **Check** frequency legality
+- **Warn** users about testing-only nature
+
+## Building for testing
+- When building the mobile app, use the following command:
+```bash
+    flutter build apk --debug
+```
+- When building the firmware, use the following command:
+```bash
+    python pio run
+```
+
+## 🎓 Learning Resources
+- ESP32 Arduino Core docs
+- FreeRTOS documentation
+- BLE specification (for protocol understanding)
+- Flutter performance best practices
+- CC1101 datasheet
+
+---
+
+## 🇷🇺 Дополнительные указания на русском
+
+### Ключевые моменты
+1. **Безопасность памяти** - критически важна для ESP32
+2. **Протокол BLE** - строго следовать формату пакетов
+3. **Тестирование** - обязательно на реальном устройстве
+4. **Документация** - описывать все изменения протокола
+5. **Ошибки** - обрабатывать явно, не игнорировать
+
+### При изменении кода
+- Проверяй утечки памяти
+- Тестируй на переполнение стека
+- Валидируй все указатели
+- Документируй изменения протокола
+- Проверяй работу с мобильным приложением
+
+---
+
+**Version**: 1.0  
+**Last Updated**: 2025-10-08  
+**Project**: ESP32 CC1101 BLE Controller
+
