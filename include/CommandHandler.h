@@ -10,16 +10,13 @@ class CommandHandler {
 public:
     using CommandFunc = std::function<bool(const uint8_t*, size_t)>;
     
-    // Flag to indicate if a command is currently executing
     volatile bool isExecuting = false;
     
-    // Регистрация команды
     void registerCommand(uint8_t id, CommandFunc func) {
         commands_[id] = func;
         ESP_LOGI("CommandHandler", "Registered command: 0x%02X", id);
     }
     
-    // Выполнение команды
     bool executeCommand(uint8_t id, const uint8_t* data, size_t len) {
         auto it = commands_.find(id);
         if (it != commands_.end()) {
@@ -33,17 +30,14 @@ public:
         return false;
     }
     
-    // Проверка существования команды
     bool hasCommand(uint8_t id) const {
         return commands_.find(id) != commands_.end();
     }
     
-    // Получение количества зарегистрированных команд
     size_t getCommandCount() const {
         return commands_.size();
     }
     
-    // Отключение команды (для модульности)
     void disableCommand(uint8_t id) {
         commands_.erase(id);
         ESP_LOGI("CommandHandler", "Disabled command: 0x%02X", id);

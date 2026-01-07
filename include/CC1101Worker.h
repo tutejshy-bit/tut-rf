@@ -40,16 +40,16 @@ struct ReceivedSamples
 
 // CC1101 commands
 enum class CC1101Command {
-    StartDetect,      // начать детектирование
-    StopDetect,       // остановить детектирование
-    StartRecord,      // начать запись
-    StopRecord,       // остановить запись
-    Transmit,         // передать сигнал
-    Configure,        // настроить модуль
-    StartAnalyzer,    // начать frequency analyzer
-    StopAnalyzer,     // остановить analyzer
-    GoIdle,           // в режим ожидания
-    StartJam          // начать джамминг
+    StartDetect,      
+    StopDetect,       
+    StartRecord,      
+    StopRecord,       
+    Transmit,         
+    Configure,        
+    StartAnalyzer,    
+    StopAnalyzer,     
+    GoIdle,           
+    StartJam
 };
 
 // Current operation state per module

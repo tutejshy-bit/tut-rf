@@ -19,7 +19,7 @@ enum BinaryMessageType : uint8_t {
     MSG_SIGNAL_SEND_ERROR = 0x93,
     MSG_FREQUENCY_SEARCH = 0x94,  // Frequency search command
     
-    // File operations (RAW binary, NO JSON!)
+    // File operations
     MSG_FILE_CONTENT = 0xA0,     // Raw file content chunks
     MSG_FILE_LIST = 0xA1,        // File list STREAMING: [0xA1][pathLen][path][flags][totalFiles:2][fileCount][files...]
     MSG_DIRECTORY_TREE = 0xA2,   // Directory tree (nested structure, directories only)

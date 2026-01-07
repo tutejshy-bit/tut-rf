@@ -449,9 +449,9 @@ void CC1101_Radio::setModulation(byte m){
 ****************************************************************/
 void CC1101_Radio::setPA(int p)
 {
-int a;
-pa[currentModule] = p;
-float mhz = MHz[currentModule];
+    int a;
+    pa[currentModule] = p;
+    float mhz = getFrequency();  // Читаем реальную частоту из регистров
 
 if (mhz >= 300 && mhz <= 348){
 if (pa[currentModule] <= -30){a = PA_TABLE_315[0];}
@@ -540,8 +540,7 @@ Calibrate();
 *OUTPUT       :none
 ****************************************************************/
 void CC1101_Radio::Calibrate(void){
-
-float mhz = MHz[currentModule];
+    float mhz = getFrequency();  // Читаем реальную частоту из регистров
 
 if (mhz >= 300 && mhz <= 348){
 SpiWriteReg(CC1101_FSCTRL0, map(mhz, 300, 348, clb1[0], clb1[1]));
@@ -1393,11 +1392,10 @@ bool CC1101_Radio::waitForCalibration(uint32_t timeoutMs)
 
 float CC1101_Radio::getFrequency()
 {
-    byte freq2 = SpiReadReg(CC1101_FREQ2);
-    byte freq1 = SpiReadReg(CC1101_FREQ1);
-    byte freq0 = SpiReadReg(CC1101_FREQ0);
-
-    unsigned long freq = ((unsigned long)freq2 << 16) | ((unsigned long)freq1 << 8) | (unsigned long)freq0;
+    byte freqBytes[3];
+    SpiReadBurstReg(CC1101_FREQ2, freqBytes, 3);  // Читаем FREQ2, FREQ1, FREQ0 за одну транзакцию
+    
+    unsigned long freq = ((unsigned long)freqBytes[0] << 16) | ((unsigned long)freqBytes[1] << 8) | (unsigned long)freqBytes[2];
     return (float)freq * 26.0 / (1 << 16);
 }
 
