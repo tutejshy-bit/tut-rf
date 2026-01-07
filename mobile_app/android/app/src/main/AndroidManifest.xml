@@ -20,9 +20,10 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
     
     <application
-        android:label="evilcrow_rf2_controller"
+        android:label="Tut RF"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:enableOnBackInvokedCallback="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"

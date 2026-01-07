@@ -501,7 +501,14 @@ else if (pa[currentModule] > 7 && pa[currentModule] <= 10){a = PA_TABLE_915[8];}
 else if (pa[currentModule] > 10){a = PA_TABLE_915[9];}
 last_pa[currentModule] = 4;
 }
-if (modulation[currentModule] == 2){
+
+// Read modulation from MDMCFG2 register instead of using internal variable
+// This ensures we always use the actual modulation set in the chip (e.g., from preset)
+Split_MDMCFG2();  // Reads MDMCFG2 and extracts m2MODFM[currentModule]
+
+// For ASK/OOK (m2MODFM = 0x30): PA_TABLE[0] = 0, PA_TABLE[1] = value
+// For other modulations: PA_TABLE[0] = value, PA_TABLE[1] = 0
+if (m2MODFM[currentModule] == 0x30){
 PA_TABLE[0] = 0;  
 PA_TABLE[1] = a;
 }else{
@@ -1331,6 +1338,57 @@ byte CC1101_Radio::ReceiveData(byte *rxBuffer)
 
 byte CC1101_Radio::getState() {
     return SpiReadStatus(CC1101_MARCSTATE);
+}
+
+/****************************************************************
+*FUNCTION NAME:calibrate
+*FUNCTION     :Perform calibration (uses current MHz[currentModule] and updates modulation from register)
+*INPUT        :none
+*OUTPUT       :none
+****************************************************************/
+void CC1101_Radio::calibrate()
+{
+    // Update modulation state from MDMCFG2 register before calibration
+    // This ensures calibration uses correct modulation settings
+    Split_MDMCFG2();
+    
+    // Perform calibration using current frequency (MHz[currentModule])
+    Calibrate();
+}
+
+/****************************************************************
+*FUNCTION NAME:waitForCalibration
+*FUNCTION     :Wait for calibration to complete
+*INPUT        :timeoutMs - timeout in milliseconds (default 100ms)
+*OUTPUT       :true if calibration completed, false if timeout
+****************************************************************/
+bool CC1101_Radio::waitForCalibration(uint32_t timeoutMs)
+{
+    uint32_t startTime = millis();
+    
+    while ((millis() - startTime) < timeoutMs) {
+        byte marcState = SpiReadStatus(CC1101_MARCSTATE);
+        
+        // MARCSTATE values:
+        // 0x01 = IDLE
+        // 0x13 = TX
+        // 0x14 = RX
+        // 0x16 = FSTXON (Frequency synthesizer on)
+        // 0x17 = CALIBRATE (Calibrating)
+        // 0x19 = SETTLING
+        
+        // Calibration is complete when we're not in CALIBRATE state
+        // and not in SETTLING state
+        if (marcState != 0x17 && marcState != 0x19) {
+            // Calibration complete - we're in IDLE, TX, RX, or FSTXON
+            return true;
+        }
+        
+        delay(1);  // Small delay to avoid busy-waiting
+    }
+    
+    // Timeout - calibration may still be in progress
+    return false;
 }
 
 float CC1101_Radio::getFrequency()

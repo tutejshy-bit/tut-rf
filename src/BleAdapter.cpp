@@ -23,8 +23,15 @@ const char* BleAdapter::CHARACTERISTIC_UUID_TX = "6e400003-b5a3-f393-e0a9-e50e24
 const char* BleAdapter::CHARACTERISTIC_UUID_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
 
 BleAdapter* BleAdapter::instance = nullptr;
+SemaphoreHandle_t BleAdapter::notifySemaphore = nullptr;
+volatile bool BleAdapter::notifyPending = false;
 
-BleAdapter::BleAdapter() : pServer(nullptr), pService(nullptr), pTxCharacteristic(nullptr), pRxCharacteristic(nullptr), serverCallbacks(nullptr), characteristicCallbacks(nullptr) {
+void BleAdapter::onNotifyComplete() {
+    // Currently unused - onStatus is called synchronously within notify()
+    // before actual BLE transmission, so semaphore approach doesn't work
+}
+
+BleAdapter::BleAdapter() : pServer(nullptr), pService(nullptr), pTxCharacteristic(nullptr), pRxCharacteristic(nullptr), serverCallbacks(nullptr), characteristicCallbacks(nullptr), txCharacteristicCallbacks(nullptr) {
     instance = this;
 }
 
@@ -38,6 +45,10 @@ BleAdapter::~BleAdapter() {
         delete characteristicCallbacks;
         characteristicCallbacks = nullptr;
     }
+    if (txCharacteristicCallbacks) {
+        delete txCharacteristicCallbacks;
+        txCharacteristicCallbacks = nullptr;
+    }
 }
 
 void BleAdapter::begin() {
@@ -45,7 +56,7 @@ void BleAdapter::begin() {
     ESP_LOGI(TAG, "Free heap before BLE init: %d bytes", ESP.getFreeHeap());
     
     // Initialize BLE device
-    BLEDevice::init("ESP32_CC1101");
+    BLEDevice::init("EvilCrow_RF2");
     ESP_LOGD(TAG, "BLE device initialized");
     
     // Request higher MTU for better throughput (Bluetooth 5.0 supports up to 512 bytes)
@@ -87,7 +98,12 @@ void BleAdapter::begin() {
         pTxCharacteristic->addDescriptor(descriptor);
     } else {
         ESP_LOGE(TAG, "Failed to allocate BLE2902 descriptor - notifications may not work");
-        // Can continue without descriptor, but notifications might not work properly
+    }
+    
+    // Add TX characteristic callbacks for notification status tracking
+    txCharacteristicCallbacks = new TxCharacteristicCallbacks(this);
+    if (txCharacteristicCallbacks != nullptr) {
+        pTxCharacteristic->setCallbacks(txCharacteristicCallbacks);
     }
     
     ESP_LOGD(TAG, "TX characteristic created with UUID: %s", CHARACTERISTIC_UUID_TX);
@@ -309,15 +325,19 @@ void BleAdapter::sendBinaryResponse(const String& data) {
     const char* dataPtr = data.c_str();
     uint16_t dataLen = data.length();
     
-    // CRITICAL: For binary messages (0x80-0xFF), always use chunking protocol
-    // This ensures proper chunk assembly on mobile app side
     // Check if this is a binary message (first byte >= 0x80)
     bool isBinaryMessage = (dataLen > 0 && static_cast<uint8_t>(static_cast<unsigned char>(dataPtr[0])) >= 0x80);
     
     if (isBinaryMessage) {
-        // Binary messages (like MSG_FILE_LIST 0xA1) should always use chunking protocol
-        // even if they fit in one packet, to ensure consistent handling
-        sendChunkedResponse(data);
+        // For small binary messages (like ModeSwitch = 4 bytes, SignalDetected = 12 bytes),
+        // send as single packet to avoid chunking overhead and BLE truncation issues
+        // For large binary messages (like State = 102 bytes, FileList), use chunking
+        if (dataLen <= MAX_CHUNK_SIZE) {
+            sendSingleChunk(0, 1, 1, dataPtr, dataLen);
+        } else {
+            // Large binary messages (like MSG_FILE_LIST 0xA1) should use chunking protocol
+            sendChunkedResponse(data);
+        }
     } else {
         // For small text responses, send as single packet
         if (dataLen <= MAX_CHUNK_SIZE) {
@@ -334,7 +354,7 @@ void BleAdapter::sendChunkedResponse(const String& data) {
     uint16_t dataLen = data.length();
     uint8_t totalChunks = (dataLen + MAX_CHUNK_SIZE - 1) / MAX_CHUNK_SIZE;
     
-    ESP_LOGD(TAG, "sendChunkedResponse: data length=%d, totalChunks=%d", dataLen, totalChunks);
+    ESP_LOGI(TAG, "sendChunkedResponse: data length=%d, totalChunks=%d, chunkId=%d", dataLen, totalChunks, chunkId);
     
     // CRITICAL: Copy data pointer before loop to ensure it remains valid
     // String reference might be destroyed, so we need to ensure data stays alive
@@ -363,19 +383,18 @@ void BleAdapter::sendChunkedResponse(const String& data) {
                  chunkNum, totalChunks, chunkId, startPos, chunkLen);
         
         // Use pointer directly instead of String::substring to avoid memory allocation
+        // sendSingleChunk now waits for BLE confirmation via semaphore
         sendSingleChunk(chunkId, chunkNum, totalChunks, dataPtr + startPos, chunkLen);
         
-        // Delay between chunks to allow BLE stack to process
-        // Reduced delay for better performance while still allowing stack to process
-        uint32_t delayMs = (chunkNum == totalChunks) ? 50 : 80;  // Reduced from 200/250ms
-        vTaskDelay(pdMS_TO_TICKS(delayMs));
-        
-        // Give BLE stack time to process - yield to other tasks
-        vTaskDelay(pdMS_TO_TICKS(20));  // Reduced from 5x10ms = 50ms
+        // CRITICAL: Increased delay between chunks to ensure BLE stack processes each chunk
+        // BLE notifications are queued, but we need to give the stack time to send them
+        // First chunk needs extra time to establish the connection state
+        if (chunkNum == 1) {
+            vTaskDelay(pdMS_TO_TICKS(50));  // Extra delay for first chunk
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(30));  // Standard delay for subsequent chunks
+        }
     }
-    
-    // Additional delay after last chunk to ensure BLE stack finishes processing
-    vTaskDelay(pdMS_TO_TICKS(50));  // Reduced from 100ms
     
     // Removed final log to avoid potential memory issues - function should complete silently
 }
@@ -415,12 +434,9 @@ void BleAdapter::streamFileData(const uint8_t* header, size_t headerSize, File& 
         totalSent += bytesRead;
     }
     
-    // Send first chunk
+    // Send first chunk (sendSingleChunk waits for BLE confirmation)
     sendSingleChunk(chunkId, chunkNum, totalChunks, (const char*)firstChunkBuffer, headerSize + (totalSent > 0 ? firstChunkDataSize : 0));
     chunkNum++;
-    
-    // Increased delay to allow BLE stack to process and free memory
-    vTaskDelay(pdMS_TO_TICKS(100));
     
     // Stream remaining file data in chunks
     while (file.available() && totalSent < fileSize) {
@@ -432,29 +448,23 @@ void BleAdapter::streamFileData(const uint8_t* header, size_t headerSize, File& 
             break;
         }
         
-        // Check heap before sending to ensure we have enough memory
+        // Check heap before sending
         size_t freeHeap = ESP.getFreeHeap();
         if (freeHeap < 10000) {
-            // Low memory - increase delay to allow BLE stack to free memory
-            ESP_LOGW(TAG, "Low heap: %zu bytes, delaying longer", freeHeap);
-            vTaskDelay(pdMS_TO_TICKS(150));
+            ESP_LOGW(TAG, "Low heap: %zu bytes", freeHeap);
+            vTaskDelay(pdMS_TO_TICKS(50));
         }
         
-        // Send this chunk
+        // Send this chunk (waits for BLE confirmation)
         sendSingleChunk(chunkId, chunkNum, totalChunks, (const char*)readBuffer, bytesRead);
         totalSent += bytesRead;
         chunkNum++;
         
-        // Increased delay between chunks to allow BLE stack to process and free memory
-        // BLE stack may allocate temporary buffers, so we need to give it time to free them
-        vTaskDelay(pdMS_TO_TICKS(100));
+        // Yield to other tasks
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
     
-    // Final delay to ensure BLE stack finishes processing
-    vTaskDelay(pdMS_TO_TICKS(100));
-    
-    // Reduced logging to avoid memory allocation
-    ESP_LOGD(TAG, "File streamed: %zu bytes sent in %d chunks", totalSent, chunkNum - 1);
+    ESP_LOGD(TAG, "File streamed: %zu bytes in %d chunks", totalSent, chunkNum - 1);
 }
 
 void BleAdapter::sendSingleChunk(uint8_t chunkId, uint8_t chunkNum, uint8_t totalChunks, const char* chunkData, uint16_t dataLen) {
@@ -466,6 +476,16 @@ void BleAdapter::sendSingleChunk(uint8_t chunkId, uint8_t chunkNum, uint8_t tota
     }
     
     uint16_t packetSize = PACKET_HEADER_SIZE + dataLen + 1; // +1 for checksum
+    
+    // CRITICAL: BLE notify has a hard limit of 509 bytes
+    // Ensure packet size doesn't exceed this limit
+    const uint16_t BLE_NOTIFY_MAX_SIZE = 509;
+    if (packetSize > BLE_NOTIFY_MAX_SIZE) {
+        // Reduce data length to fit within BLE limit
+        dataLen = BLE_NOTIFY_MAX_SIZE - PACKET_HEADER_SIZE - 1;
+        packetSize = PACKET_HEADER_SIZE + dataLen + 1;
+        ESP_LOGW(TAG, "Packet size exceeds BLE limit, reducing to %d bytes", packetSize);
+    }
     
     // Use static buffer instead of VLA (Variable Length Array)
     // VLA on stack is dangerous on ESP32 with limited stack size
@@ -480,8 +500,11 @@ void BleAdapter::sendSingleChunk(uint8_t chunkId, uint8_t chunkNum, uint8_t tota
     
     uint8_t* packet = packetBuffer; // Use static buffer
     
-    // NO LOGGING during file streaming to avoid memory allocation
-    // ESP_LOGD allocates memory for string formatting which causes heap pressure
+    // Log first chunk to debug missing chunk issue
+    if (chunkNum == 1) {
+        ESP_LOGI(TAG, "Sending FIRST chunk: chunkId=%d, chunkNum=%d/%d, dataLen=%d, packetSize=%d", 
+                 chunkId, chunkNum, totalChunks, dataLen, packetSize);
+    }
     
     packet[0] = MAGIC_BYTE;        // Magic byte
     packet[1] = 0x01;             // Type: data
@@ -497,31 +520,23 @@ void BleAdapter::sendSingleChunk(uint8_t chunkId, uint8_t chunkNum, uint8_t tota
     // Calculate checksum
     packet[7 + dataLen] = calculateChecksum(packet, packetSize - 1);
     
-    // Send packet - ensure we only call notify once per chunk
-    // Reduce logging verbosity to avoid BLE library trying to allocate memory for hex dump
-    // Free heap check before sending to ensure we have enough memory
-    size_t freeHeap = ESP.getFreeHeap();
-    if (freeHeap < 5000) {
-        ESP_LOGW(TAG, "Low heap before chunk send: %d bytes", freeHeap);
-        // Delay longer if low on memory
-        vTaskDelay(pdMS_TO_TICKS(100));
+    // Log first chunk data preview for debugging
+    if (chunkNum == 1 && dataLen > 0) {
+        ESP_LOGI(TAG, "First chunk first byte: 0x%02X, magic: 0x%02X", 
+                 chunkData[0], packet[0]);
     }
     
-    // BLE library may allocate memory for setValue - we can't avoid this
-    // But we can ensure we give it time to process before next chunk
     pTxCharacteristic->setValue(packet, packetSize);
-    
-    // Delay before notify to let BLE stack prepare (may allocate memory)
-    vTaskDelay(pdMS_TO_TICKS(20));
-    
     pTxCharacteristic->notify();
     
-    // Delay after notify to let BLE stack process and potentially free memory
-    // BLE stack may keep a copy of data until it's sent, so we need to wait
-    vTaskDelay(pdMS_TO_TICKS(20));
+    if (chunkNum == 1) {
+        ESP_LOGI(TAG, "First chunk notify() called, packetSize=%d", packetSize);
+    }
     
-    // NO LOGGING during file streaming to avoid memory allocation
-    // All logging removed to prevent heap pressure during large file transfers
+    // CRITICAL: Increased delay to allow BLE stack to process and send the notification
+    // BLE notifications are asynchronous and need time to be queued and transmitted
+    // This is especially important for the first chunk which may need connection setup
+    vTaskDelay(pdMS_TO_TICKS(10));
 }
 
 uint8_t BleAdapter::calculateChecksum(const uint8_t *data, size_t len) {
@@ -729,5 +744,13 @@ void BleAdapter::CharacteristicCallbacks::onWrite(BLECharacteristic* pCharacteri
         
         // Process binary data
         adapter->processBinaryData((uint8_t*)rxValue.c_str(), rxValue.length());
+    }
+}
+
+// TX Characteristic callbacks for notification status tracking
+void BleAdapter::TxCharacteristicCallbacks::onStatus(BLECharacteristic* pCharacteristic, Status s, uint32_t code) {
+    // Signal that notification was processed by BLE stack
+    if (s == BLECharacteristicCallbacks::Status::SUCCESS_NOTIFY) {
+        BleAdapter::onNotifyComplete();
     }
 }

@@ -82,15 +82,19 @@ private:
                  module, frequency, modulation, deviation, rxBandwidth, dataRate, presetStr);
         
         Device::TaskRecordBuilder builder(frequency);
-        builder.setModule(module)
-               .setModulation(modulation)
-               .setDeviation(deviation)
-               .setRxBandwidth(rxBandwidth)
-               .setDataRate(dataRate);
+        builder.setModule(module);
         
         // Only set preset if it's not empty
         if (!presetString.empty()) {
+            // When preset is provided, don't set modulation/deviation/rxBandwidth/dataRate
+            // to avoid overriding preset values
             builder.setPreset(presetString);
+        } else {
+            // Only set individual parameters when preset is not provided
+            builder.setModulation(modulation)
+                   .setDeviation(deviation)
+                   .setRxBandwidth(rxBandwidth)
+                   .setDataRate(dataRate);
         }
         
         Device::TaskRecord task = builder.build();

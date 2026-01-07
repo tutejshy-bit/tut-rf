@@ -80,6 +80,7 @@ public:
   void setTx(float frequency);
   void setTxWithPreset(float frequency, const uint8_t *presetBytes, int presetLength);
   void sendData(byte *txBuffer, byte size);
+  void sendDataNonBlocking(byte *txBuffer, byte size, int delayMs);  // Non-blocking version for jamming
     // setMode/getMode removed - no longer used with worker architecture
     // void setMode(OperationMode m) { mode = m; }
     // OperationMode getMode() const { return mode; }
@@ -101,6 +102,11 @@ public:
   std::array<byte,8> getPATableValues();
   void readAllConfigRegisters(byte *buffer, byte num);
   float getFrequency();
+  void setPA(int power);  // Set power in dBm (-30 to 10)
+  void calibrate();  // Perform calibration (uses current frequency and updates modulation from register)
+  bool waitForCalibration(uint32_t timeoutMs = 100);  // Wait for calibration to complete
+  void enableContinuousTx();  // Enable continuous transmission mode for jamming
+  void writeToTxFifo(byte *data, byte size);  // Write data directly to TX FIFO
 };
 
 extern ModuleCc1101 moduleCC1101State[];

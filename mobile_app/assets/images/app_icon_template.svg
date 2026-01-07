@@ -1,0 +1,76 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Glow effect filter -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="strongGlow">
+      <feGaussianBlur stdDeviation="8" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Dark rounded square background with bevel effect -->
+  <rect x="32" y="32" width="448" height="448" rx="64" ry="64" fill="#1a1a1a" stroke="#2a2a2a" stroke-width="2"/>
+  <rect x="40" y="40" width="432" height="432" rx="56" ry="56" fill="#0f0f0f" opacity="0.5"/>
+  
+  <!-- Main shield shape with strong glow -->
+  <path id="shield" d="M 256 100 L 170 125 L 170 245 Q 170 290 195 330 Q 220 370 256 400 Q 292 370 317 330 Q 342 290 342 245 L 342 125 Z" 
+        fill="#38BDF8" 
+        filter="url(#strongGlow)" 
+        opacity="0.95"/>
+  
+  <!-- Inner shield border for depth -->
+  <path d="M 256 110 L 180 132 L 180 245 Q 180 285 203 320 Q 226 355 256 380 Q 286 355 309 320 Q 332 285 332 245 L 332 132 Z" 
+        fill="none" 
+        stroke="#5dd5ff" 
+        stroke-width="2" 
+        opacity="0.7"/>
+  
+  <!-- Inner shield (spider body) - smaller shield in center -->
+  <path d="M 256 200 L 210 215 L 210 265 Q 210 290 225 310 Q 240 330 256 340 Q 272 330 287 310 Q 302 290 302 265 L 302 215 Z" 
+        fill="#1a1a1a" 
+        opacity="0.85"
+        filter="url(#glow)"/>
+  
+  <!-- Cross in center of inner shield (spider body) -->
+  <line x1="256" y1="220" x2="256" y2="320" stroke="#38BDF8" stroke-width="8" stroke-linecap="round" filter="url(#strongGlow)"/>
+  <line x1="210" y1="270" x2="302" y2="270" stroke="#38BDF8" stroke-width="8" stroke-linecap="round" filter="url(#strongGlow)"/>
+  
+  <!-- Spider legs - 8 legs total, 4 on each side -->
+  <!-- Top left legs -->
+  <path d="M 210 215 L 185 195 L 165 180" stroke="#38BDF8" stroke-width="6" fill="none" stroke-linecap="round" filter="url(#glow)"/>
+  <path d="M 210 225 L 180 200 L 155 180" stroke="#38BDF8" stroke-width="6" fill="none" stroke-linecap="round" filter="url(#glow)"/>
+  
+  <!-- Top right legs -->
+  <path d="M 302 215 L 327 195 L 347 180" stroke="#38BDF8" stroke-width="6" fill="none" stroke-linecap="round" filter="url(#glow)"/>
+  <path d="M 302 225 L 332 200 L 357 180" stroke="#38BDF8" stroke-width="6" fill="none" stroke-linecap="round" filter="url(#glow)"/>
+  
+  <!-- Bottom left legs -->
+  <path d="M 210 265 L 185 285 L 165 300" stroke="#38BDF8" stroke-width="6" fill="none" stroke-linecap="round" filter="url(#glow)"/>
+  <path d="M 210 275 L 180 295 L 155 310" stroke="#38BDF8" stroke-width="6" fill="none" stroke-linecap="round" filter="url(#glow)"/>
+  
+  <!-- Bottom right legs -->
+  <path d="M 302 265 L 327 285 L 347 300" stroke="#38BDF8" stroke-width="6" fill="none" stroke-linecap="round" filter="url(#glow)"/>
+  <path d="M 302 275 L 332 295 L 357 310" stroke="#38BDF8" stroke-width="6" fill="none" stroke-linecap="round" filter="url(#glow)"/>
+  
+  <!-- Upper symbols - Diamond on left -->
+  <path d="M 220 140 L 240 130 L 220 120 L 200 130 Z" 
+        fill="#38BDF8" 
+        filter="url(#strongGlow)" 
+        opacity="0.95"/>
+  
+  <!-- Upper symbols - Arrow/L shape on right (horizontal line with vertical line extending down from right end) -->
+  <line x1="292" y1="135" x2="320" y2="135" stroke="#38BDF8" stroke-width="5" stroke-linecap="round" filter="url(#strongGlow)"/>
+  <line x1="320" y1="135" x2="320" y2="150" stroke="#38BDF8" stroke-width="5" stroke-linecap="round" filter="url(#strongGlow)"/>
+  
+  <!-- Additional glow accent at center -->
+  <circle cx="256" cy="270" r="4" fill="#38BDF8" filter="url(#strongGlow)" opacity="0.9"/>
+</svg>

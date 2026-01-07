@@ -17,6 +17,7 @@ public:
         handler.registerCommand(0x01, handleGetState);
         handler.registerCommand(0x02, handleRequestScan);
         handler.registerCommand(0x03, handleRequestIdle);
+        handler.registerCommand(0x13, handleSetTime);
         
         ESP_LOGI("StateCommands", "State commands registered successfully");
     }
@@ -77,6 +78,25 @@ private:
         
         Device::TaskIdle task(module);
         ControllerAdapter::sendTask(std::move(task));
+        
+        return true;
+    }
+    
+    // Установка времени (Unix timestamp в секундах, 4 байта little-endian)
+    static bool handleSetTime(const uint8_t* data, size_t len) {
+        if (len < 4) {
+            ESP_LOGW("StateCommands", "Insufficient data for setTime");
+            return false;
+        }
+        
+        // Читаем Unix timestamp (little-endian)
+        uint32_t timestamp = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
+        
+        // Устанавливаем глобальное время
+        extern uint32_t deviceTime;
+        deviceTime = timestamp;
+        
+        ESP_LOGI("StateCommands", "Time set to: %lu (Unix timestamp)", (unsigned long)timestamp);
         
         return true;
     }

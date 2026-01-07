@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../l10n/app_localizations.dart';
 
 class FilePreviewWidget extends StatelessWidget {
   final String fileName;
@@ -19,13 +20,13 @@ class FilePreviewWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (isLoading) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('Loading file preview...'),
+            const CircularProgressIndicator(),
+            const SizedBox(height: 16),
+            Text(AppLocalizations.of(context)!.loadingFilePreview),
           ],
         ),
       );
@@ -43,7 +44,7 @@ class FilePreviewWidget extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              'Preview Error',
+              AppLocalizations.of(context)!.previewError,
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                 color: Colors.red,
               ),
@@ -63,7 +64,7 @@ class FilePreviewWidget extends StatelessWidget {
               const SizedBox(height: 16),
               ElevatedButton(
                 onPressed: onRetry,
-                child: const Text('Retry'),
+                child: Text(AppLocalizations.of(context)!.retry),
               ),
             ],
           ],
@@ -102,7 +103,7 @@ class FilePreviewWidget extends StatelessWidget {
                 ),
               ),
               Text(
-                '${content.length} chars',
+                AppLocalizations.of(context)!.chars(content.length),
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Colors.grey[600],
                 ),
@@ -134,7 +135,7 @@ class FilePreviewWidget extends StatelessWidget {
           if (content.length > 500) ...[
             const SizedBox(height: 8),
             Text(
-              'Preview truncated. Open file to see full content.',
+              AppLocalizations.of(context)!.previewTruncated,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: Colors.grey[600],
                 fontStyle: FontStyle.italic,

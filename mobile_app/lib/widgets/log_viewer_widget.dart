@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../l10n/app_localizations.dart';
 import '../providers/log_provider.dart';
 import '../models/log_entry.dart';
 
@@ -13,25 +14,25 @@ class LogViewerWidget extends StatelessWidget {
         final logs = logProvider.logs;
 
         if (logs.isEmpty) {
-          return const Center(
+          return Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(
+                const Icon(
                   Icons.description_outlined,
                   size: 64,
                   color: Colors.grey,
                 ),
-                SizedBox(height: 16),
+                const SizedBox(height: 16),
                 Text(
-                  'No logs yet',
-                  style: TextStyle(
+                  AppLocalizations.of(context)!.noLogsYet,
+                  style: const TextStyle(
                     fontSize: 18,
                     color: Colors.grey,
                   ),
                 ),
                 Text(
-                  'Commands and responses will appear here',
+                  AppLocalizations.of(context)!.commandsAndResponsesWillAppearHere,
                   style: TextStyle(
                     color: Colors.grey,
                   ),
@@ -49,7 +50,7 @@ class LogViewerWidget extends StatelessWidget {
               child: Row(
                 children: [
                   Text(
-                    'Logs (${logs.length})',
+                    AppLocalizations.of(context)!.logsCount(logs.length),
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                       fontWeight: FontWeight.bold,
                     ),
@@ -58,7 +59,7 @@ class LogViewerWidget extends StatelessWidget {
                   IconButton(
                     onPressed: () => logProvider.clearLogs(),
                     icon: const Icon(Icons.clear_all),
-                    tooltip: 'Clear all logs',
+                    tooltip: AppLocalizations.of(context)!.clearAllLogs,
                   ),
                 ],
               ),

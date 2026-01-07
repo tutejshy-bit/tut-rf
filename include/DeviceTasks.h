@@ -5,6 +5,7 @@
 #include "compatibility.h"
 #include <vector>
 #include "Arduino.h"
+#include "ModuleCc1101.h"
 
 namespace Device {
 
@@ -15,7 +16,8 @@ enum class TaskType {
     FilesManager,
     FileUpload,
     GetState,
-    Idle
+    Idle,
+    Jam
 };
 
 struct TaskBase {
@@ -355,6 +357,101 @@ struct TaskIdle: public TaskBase
     TaskIdle(int module) : TaskBase(TaskType::Idle), module(module) {}
 };
 
+// ====================================
+// Task Jam
+// ====================================
+
+enum class JamPatternType {
+    Random,      // Случайный шум
+    Alternating, // Чередующийся паттерн (0xAA, 0x55)
+    Continuous,  // Непрерывная передача (0xFF)
+    Custom       // Пользовательский паттерн
+};
+
+struct TaskJam: public TaskBase
+{
+  public:
+    int module;
+    float frequency;
+    int power;           // Мощность передатчика (0-7)
+    JamPatternType patternType;
+    std::unique_ptr<std::vector<uint8_t>> customPattern; // Для Custom паттерна
+    uint32_t maxDurationMs;  // Максимальное время работы в мс (0 = без ограничения)
+    uint32_t cooldownMs;     // Время паузы после перегрева в мс
+
+    TaskJam() : TaskBase(TaskType::Jam), 
+                module(0), 
+                frequency(433.92f),
+                power(7),
+                patternType(JamPatternType::Random),
+                maxDurationMs(60000),  // 60 секунд по умолчанию
+                cooldownMs(5000) {}    // 5 секунд пауза
+
+    // Delete copy constructor and assignment operator
+    TaskJam(const TaskJam&) = delete;
+    TaskJam& operator=(const TaskJam&) = delete;
+
+    // Move constructor and move assignment operator
+    TaskJam(TaskJam&& other) noexcept = default;
+    TaskJam& operator=(TaskJam&& other) noexcept = default;
+};
+
+class TaskJamBuilder
+{
+  private:
+    TaskJam task;
+
+  public:
+    TaskJamBuilder() = default;
+
+    TaskJamBuilder& setModule(int mod)
+    {
+        task.module = mod;
+        return *this;
+    }
+
+    TaskJamBuilder& setFrequency(float freq)
+    {
+        task.frequency = freq;
+        return *this;
+    }
+
+    TaskJamBuilder& setPower(int pwr)
+    {
+        task.power = pwr;
+        return *this;
+    }
+
+    TaskJamBuilder& setPatternType(JamPatternType pattern)
+    {
+        task.patternType = pattern;
+        return *this;
+    }
+
+    TaskJamBuilder& setCustomPattern(const std::vector<uint8_t>& pattern)
+    {
+        task.customPattern = std::make_unique<std::vector<uint8_t>>(pattern);
+        return *this;
+    }
+
+    TaskJamBuilder& setMaxDuration(uint32_t durationMs)
+    {
+        task.maxDurationMs = durationMs;
+        return *this;
+    }
+
+    TaskJamBuilder& setCooldown(uint32_t cooldownMs)
+    {
+        task.cooldownMs = cooldownMs;
+        return *this;
+    }
+
+    TaskJam build()
+    {
+        return std::move(task);
+    }
+};
+
 } // namespace Device
 
 struct QueueItem {
@@ -367,6 +464,7 @@ struct QueueItem {
         Device::TaskFileUpload fileUploadTask;
         Device::TaskGetState getStateTask;
         Device::TaskIdle idleTask;
+        Device::TaskJam jamTask;
     };
 
     // Default constructor
@@ -382,6 +480,7 @@ struct QueueItem {
     QueueItem(Device::TaskFileUpload&& task) : type(Device::TaskType::FileUpload), fileUploadTask(std::move(task)) {}
     QueueItem(Device::TaskGetState&& task) : type(Device::TaskType::GetState), getStateTask(std::move(task)) {}
     QueueItem(Device::TaskIdle&& task) : type(Device::TaskType::Idle), idleTask(std::move(task)) {}
+    QueueItem(Device::TaskJam&& task) : type(Device::TaskType::Jam), jamTask(std::move(task)) {}
 
     // Destructor
     ~QueueItem() {
@@ -406,6 +505,9 @@ struct QueueItem {
                 break;
             case Device::TaskType::Idle:
                 idleTask.~TaskIdle();
+                break;
+            case Device::TaskType::Jam:
+                jamTask.~TaskJam();
                 break;
             default:
                 break;
@@ -440,6 +542,9 @@ struct QueueItem {
             case Device::TaskType::Idle:
                 new (&idleTask) Device::TaskIdle(std::move(other.idleTask));
                 break;
+            case Device::TaskType::Jam:
+                new (&jamTask) Device::TaskJam(std::move(other.jamTask));
+                break;
             default:
                 break;
         }
@@ -471,6 +576,9 @@ struct QueueItem {
                     break;
                 case Device::TaskType::Idle:
                     new (&idleTask) Device::TaskIdle(std::move(other.idleTask));
+                    break;
+                case Device::TaskType::Jam:
+                    new (&jamTask) Device::TaskJam(std::move(other.jamTask));
                     break;
                 default:
                     break;

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../l10n/app_localizations.dart';
 import '../services/cc1101/cc1101_values.dart';
+import '../theme/app_colors.dart';
 
 /// Комбинированный селектор частоты с валидацией
 class FrequencySelector extends StatefulWidget {
@@ -91,9 +93,13 @@ class _FrequencySelectorState extends State<FrequencySelector> {
         TextFormField(
           controller: widget.controller,
           enabled: widget.enabled,
+          style: TextStyle(
+            color: AppColors.primaryText,
+            fontSize: 14,
+          ),
           decoration: InputDecoration(
-            labelText: 'Frequency (MHz)',
-            hintText: '300-348, 387-464, 779-928 MHz',
+            labelText: '${AppLocalizations.of(context)!.frequency} (${AppLocalizations.of(context)!.mhz})',
+            hintText: '300-348, 387-464, 779-928 ${AppLocalizations.of(context)!.mhz}',
             errorText: _errorText,
             border: const OutlineInputBorder(),
             prefixIcon: const Icon(Icons.radio),
@@ -131,7 +137,7 @@ class _FrequencySelectorState extends State<FrequencySelector> {
               return ListTile(
                 contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                 title: Text(
-                  '$freq MHz',
+                  '$freq ${AppLocalizations.of(context)!.mhz}',
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
                   ),
@@ -228,6 +234,10 @@ class _FrequencyInputFieldState extends State<FrequencyInputField> {
     return TextFormField(
       controller: widget.controller,
       enabled: widget.enabled,
+      style: TextStyle(
+        color: AppColors.primaryText,
+        fontSize: 14,
+      ),
       decoration: InputDecoration(
         labelText: widget.label,
         hintText: '300-348, 387-464, 779-928 MHz',
@@ -309,8 +319,12 @@ class _DataRateInputFieldState extends State<DataRateInputField> {
     return TextFormField(
       controller: widget.controller,
       enabled: widget.enabled,
+      style: TextStyle(
+        color: AppColors.primaryText,
+        fontSize: 14,
+      ),
       decoration: InputDecoration(
-        labelText: 'Data Rate (kBaud)',
+        labelText: '${AppLocalizations.of(context)!.dataRate} (${AppLocalizations.of(context)!.kbps})',
         hintText: '${CC1101Values.dataRateLimits['min']}-${CC1101Values.dataRateLimits['max']}',
         errorText: _errorText,
         border: const OutlineInputBorder(),
@@ -390,8 +404,12 @@ class _DeviationInputFieldState extends State<DeviationInputField> {
     return TextFormField(
       controller: widget.controller,
       enabled: widget.enabled,
+      style: TextStyle(
+        color: AppColors.primaryText,
+        fontSize: 14,
+      ),
       decoration: InputDecoration(
-        labelText: 'Deviation (kHz)',
+        labelText: '${AppLocalizations.of(context)!.deviation} (${AppLocalizations.of(context)!.khz})',
         hintText: '${CC1101Values.deviationLimits['min']}-${CC1101Values.deviationLimits['max']}',
         errorText: _errorText,
         border: const OutlineInputBorder(),
@@ -424,8 +442,8 @@ class PresetSelector extends StatelessWidget {
     return DropdownButtonFormField<String>(
       value: value,
       onChanged: enabled ? onChanged : null,
-      decoration: const InputDecoration(
-        labelText: 'Preset',
+      decoration: InputDecoration(
+        labelText: AppLocalizations.of(context)!.preset,
         border: OutlineInputBorder(),
         prefixIcon: Icon(Icons.settings),
         isDense: true,
@@ -439,7 +457,10 @@ class PresetSelector extends StatelessWidget {
             constraints: const BoxConstraints(maxWidth: 200),
             child: Text(
                 preset['name'],
-              style: const TextStyle(fontWeight: FontWeight.w500),
+              style: TextStyle(
+                fontWeight: FontWeight.w500,
+                color: AppColors.secondaryText,
+              ),
               overflow: TextOverflow.ellipsis,
               ),
           ),
@@ -486,15 +507,18 @@ class BandwidthSelector extends StatelessWidget {
           }
         }
       } : null,
-      decoration: const InputDecoration(
-        labelText: 'Bandwidth (kHz)',
+      decoration: InputDecoration(
+        labelText: '${AppLocalizations.of(context)!.bandwidth} (${AppLocalizations.of(context)!.khz})',
         border: OutlineInputBorder(),
-        prefixIcon: Icon(Icons.waves),
+        prefixIcon: Icon(Icons.straighten),
       ),
       items: CC1101Values.bandwidths.map((bandwidth) {
         return DropdownMenuItem<String>(
           value: bandwidth['value'],
-          child: Text('${bandwidth['value']} kHz'),
+          child: Text(
+            '${bandwidth['value']} ${AppLocalizations.of(context)!.khz}',
+            style: TextStyle(color: AppColors.secondaryText),
+          ),
         );
       }).toList(),
     );
@@ -519,15 +543,18 @@ class ModulationSelector extends StatelessWidget {
     return DropdownButtonFormField<String>(
       value: value,
       onChanged: enabled ? onChanged : null,
-      decoration: const InputDecoration(
-        labelText: 'Modulation',
+      decoration: InputDecoration(
+        labelText: AppLocalizations.of(context)!.modulation,
         border: OutlineInputBorder(),
         prefixIcon: Icon(Icons.radio),
       ),
       items: CC1101Values.getModulationNames().map((modulation) {
         return DropdownMenuItem<String>(
           value: modulation,
-          child: Text(modulation),
+          child: Text(
+            _getLocalizedModulationName(context, modulation),
+            style: TextStyle(color: AppColors.secondaryText),
+          ),
         );
       }).toList(),
     );
@@ -559,17 +586,17 @@ class PresetInfoWidget extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Preset: ${preset['name']}',
+              '${AppLocalizations.of(context)!.preset}: ${preset['name']}',
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
                 fontWeight: FontWeight.bold,
               ),
             ),
             const SizedBox(height: 8),
-            Text('Modulation: ${preset['modulation']}'),
-            Text('Bandwidth: ${preset['bandwidth']}'),
-            Text('Data Rate: ${preset['dataRate']}'),
+            Text('${AppLocalizations.of(context)!.modulation}: ${preset['modulation']}'),
+            Text('${AppLocalizations.of(context)!.bandwidth}: ${preset['bandwidth']}'),
+            Text('${AppLocalizations.of(context)!.dataRate}: ${preset['dataRate']}'),
             if (preset['deviation'] != null)
-              Text('Deviation: ${preset['deviation']}'),
+              Text('${AppLocalizations.of(context)!.deviation}: ${preset['deviation']}'),
           ],
         ),
       ),
@@ -666,5 +693,24 @@ class ValidationStatusWidget extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// Получение локализованного названия модуляции
+String _getLocalizedModulationName(BuildContext context, String modulationName) {
+  final l10n = AppLocalizations.of(context)!;
+  switch (modulationName) {
+    case 'ASK/OOK':
+      return l10n.modulationAskOok;
+    case '2-FSK':
+      return l10n.modulation2Fsk;
+    case '4-FSK':
+      return l10n.modulation4Fsk;
+    case 'GFSK':
+      return l10n.modulationGfsk;
+    case 'MSK':
+      return l10n.modulationMsk;
+    default:
+      return modulationName;
   }
 }

@@ -144,7 +144,7 @@ class _TransmitScreenState extends State<TransmitScreen> with TickerProviderStat
          pulseDuration: 100, // TODO: Calculate from config
        );
        
-       _showSuccessSnackBar('Передача начата на модуле ${moduleIndex + 1}');
+       _showSuccessSnackBar('Передача начата на Модуле №${moduleIndex + 1}');
      } catch (e) {
        _showErrorDialog('Ошибка передачи', 'Не удалось начать передачу: $e');
      }

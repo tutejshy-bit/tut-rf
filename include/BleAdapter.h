@@ -48,12 +48,20 @@ private:
         void onDisconnect(BLEServer* pServer) override;
     };
     
-    // Characteristic callbacks
+    // Characteristic callbacks for RX (incoming data)
     class CharacteristicCallbacks : public BLECharacteristicCallbacks {
         BleAdapter* adapter;
     public:
         CharacteristicCallbacks(BleAdapter* adapter) : adapter(adapter) {}
         void onWrite(BLECharacteristic* pCharacteristic) override;
+    };
+    
+    // Characteristic callbacks for TX (outgoing notifications)
+    class TxCharacteristicCallbacks : public BLECharacteristicCallbacks {
+        BleAdapter* adapter;
+    public:
+        TxCharacteristicCallbacks(BleAdapter* adapter) : adapter(adapter) {}
+        void onStatus(BLECharacteristic* pCharacteristic, Status s, uint32_t code) override;
     };
     
     BLEServer* pServer;
@@ -63,6 +71,7 @@ private:
     
     ServerCallbacks* serverCallbacks;
     CharacteristicCallbacks* characteristicCallbacks;
+    TxCharacteristicCallbacks* txCharacteristicCallbacks;
     
     bool deviceConnected = false;
     bool oldDeviceConnected = false;
@@ -74,7 +83,7 @@ private:
     
     // Binary protocol constants
     static const uint8_t MAGIC_BYTE = 0xAA;
-    static const uint16_t MAX_CHUNK_SIZE = 500; // Optimized for Bluetooth 5.0 MTU 512 (dataLen is now 2 bytes)
+    static const uint16_t MAX_CHUNK_SIZE = 500; // Safe maximum: BLE notify limit is 509 bytes, so 509 - 7 (header) - 1 (checksum) - 1 (safety) = 500
     static const uint8_t PACKET_HEADER_SIZE = 7; // Increased from 6: dataLen is now 2 bytes
     
     // Chunking for large responses
@@ -123,6 +132,14 @@ private:
     
     // Static instance for callbacks
     static BleAdapter* instance;
+    
+    // Notification synchronization
+    static SemaphoreHandle_t notifySemaphore;
+    static volatile bool notifyPending;
+    
+public:
+    // Called when notification is confirmed by BLE stack
+    static void onNotifyComplete();
 };
 
 #endif // BleAdapter_h

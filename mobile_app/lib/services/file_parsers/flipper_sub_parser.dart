@@ -107,6 +107,13 @@ class FlipperSubParser extends BaseFileParser {
     String? preset;
     String? protocol;
     
+    // Переменные для Bit_Raw формата
+    int? bitCount;
+    int? te;
+    int? bitRaw;
+    List<int>? dataRawHex;
+    String? binaryString;
+    
     for (int i = 0; i < lines.length; i++) {
       final line = lines[i].trim();
       if (line.isEmpty) continue;
@@ -131,6 +138,47 @@ class FlipperSubParser extends BaseFileParser {
         case 'Protocol':
           protocol = value;
           result['protocol'] = value;
+          break;
+          
+        case 'Bit':
+          bitCount = int.tryParse(value);
+          if (bitCount != null) {
+            result['bit'] = bitCount;
+          }
+          break;
+          
+        case 'TE':
+          te = int.tryParse(value);
+          if (te != null) {
+            result['te'] = te;
+          }
+          break;
+          
+        case 'Bit_RAW':
+          bitRaw = int.tryParse(value);
+          if (bitRaw != null) {
+            result['bit_raw'] = bitRaw;
+          }
+          break;
+          
+        case 'Data_RAW':
+          // Парсим hex значения из Data_RAW
+          try {
+            final hexValues = value.split(' ')
+                .map((s) => s.trim())
+                .where((s) => s.isNotEmpty)
+                .map((s) => int.tryParse(s, radix: 16) ?? 0)
+                .toList();
+            if (hexValues.isNotEmpty) {
+              dataRawHex = hexValues;
+              // Конвертируем hex данные в бинарную строку
+              binaryString = _convertHexToBinary(hexValues, bitRaw ?? hexValues.length * 8);
+              result['data_raw'] = hexValues.map((v) => v.toRadixString(16).padLeft(2, '0')).join(' ');
+            }
+          } catch (e) {
+            // Игнорируем невалидные данные
+            continue;
+          }
           break;
           
         case 'RAW_Data':
@@ -161,12 +209,26 @@ class FlipperSubParser extends BaseFileParser {
       }
     }
     
+    // Если это BinRAW протокол, генерируем RAW_Data из Bit_Raw
+    if (protocol == 'BinRAW' && bitRaw != null && te != null && dataRawHex != null && binaryString != null) {
+      final pulseData = _generatePulseDataFromBitRaw(dataRawHex, bitRaw, te);
+      if (pulseData.isNotEmpty) {
+        rawData.add(pulseData);
+      }
+      result['binary'] = binaryString;
+    }
+    
     // Объединяем все RAW_Data в одну строку
     String? rawString;
     if (rawData.isNotEmpty) {
       rawString = rawData
           .expand((row) => row)
           .join(' ');
+    }
+    
+    // Если есть binary строка, используем её
+    if (binaryString != null && rawString == null) {
+      rawString = binaryString;
     }
     
     return SignalData(
@@ -178,9 +240,62 @@ class FlipperSubParser extends BaseFileParser {
       dataRate: result['dataRate']?.toDouble(),
       deviation: result['deviation']?.toDouble(),
       raw: rawString,
+      binary: binaryString,
       rawData: rawData.isNotEmpty ? rawData : null,
       metadata: result.isNotEmpty ? result : null,
     );
+  }
+  
+  /// Конвертация hex значений в бинарную строку
+  String _convertHexToBinary(List<int> hexValues, int bitCount) {
+    final buffer = StringBuffer();
+    int bitsProcessed = 0;
+    
+    for (int byteValue in hexValues) {
+      if (bitsProcessed >= bitCount) break;
+      
+      for (int i = 7; i >= 0; i--) {
+        if (bitsProcessed >= bitCount) break;
+        final bit = (byteValue >> i) & 0x01;
+        buffer.write(bit.toString());
+        bitsProcessed++;
+      }
+    }
+    
+    return buffer.toString();
+  }
+  
+  /// Генерация pulse data из Bit_Raw формата (как в C++ коде)
+  List<int> _generatePulseDataFromBitRaw(List<int> rawData, int bitRaw, int te) {
+    final pulseData = <int>[];
+    bool currentState = false;
+    int currentDuration = 0;
+    
+    for (int i = 0; i < bitRaw; i++) {
+      final byteIndex = i ~/ 8;
+      if (byteIndex >= rawData.length) break;
+      
+      final bitIndex = 7 - (i % 8);
+      final bit = (rawData[byteIndex] >> bitIndex) & 0x01;
+      final boolState = bit == 1;
+      
+      if (boolState == currentState) {
+        currentDuration += te;
+      } else {
+        if (currentDuration > 0) {
+          pulseData.add(currentState ? currentDuration : -currentDuration);
+        }
+        currentState = boolState;
+        currentDuration = te;
+      }
+    }
+    
+    // Добавляем последний импульс
+    if (currentDuration > 0) {
+      pulseData.add(currentState ? currentDuration : -currentDuration);
+    }
+    
+    return pulseData;
   }
   
   /// Парсинг типа файла

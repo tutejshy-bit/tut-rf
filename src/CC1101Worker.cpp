@@ -8,6 +8,8 @@
 #include "FrequencyAnalyzer.h"
 #include "StringHelpers.h"
 #include "SubFileParser.h"  // For preset byte arrays
+#include "CommandHandler.h"
+#include "DeviceTasks.h"
 #include "esp_log.h"
 
 static const char* TAG = "CC1101Worker";
@@ -40,6 +42,7 @@ CC1101State CC1101Worker::moduleStates[CC1101_NUM_MODULES] = {CC1101State::Idle,
 int CC1101Worker::detectionMinRssi[CC1101_NUM_MODULES] = {-50, -50};
 bool CC1101Worker::detectionIsBackground[CC1101_NUM_MODULES] = {false, false};
 CC1101Worker::RecordingConfig CC1101Worker::recordingConfigs[CC1101_NUM_MODULES];
+CC1101Worker::JammingConfig CC1101Worker::jammingConfigs[CC1101_NUM_MODULES];
 SignalDetectedCallback CC1101Worker::signalDetectedCallback = nullptr;
 SignalRecordedCallback CC1101Worker::signalRecordedCallback = nullptr;
 SemaphoreHandle_t sdMutex = nullptr;  // SD card mutex for concurrent file operations
@@ -162,20 +165,21 @@ ReceivedSamples& CC1101Worker::getReceivedData(int module)
 
 void CC1101Worker::start() {
     // Create worker task with static allocation
-    // Stack usage optimized:
+    // Stack usage:
     // - StreamingPulsePayload (~100 bytes - reads from file on-demand!)
     // - checkAndSaveRecording() chunk buffer (~2KB)
     // - Stack frames and local variables (~1KB)
-    // Total: ~3.5KB (was 6KB before streaming optimization!)
-    static StackType_t workerStack[4096 / sizeof(StackType_t)];
+    // - BLE notifications and system calls (~1KB)
+    // Total: ~4KB used, increased to 6KB for safety margin
+    static StackType_t workerStack[6144 / sizeof(StackType_t)];
     static StaticTask_t workerBuffer;
     
     workerTaskHandle = xTaskCreateStatic(
         workerTask,
         "CC1101Worker",
-        4096 / sizeof(StackType_t),
+        6144 / sizeof(StackType_t),
         nullptr,
-        3,  // Priority 3 (higher priority for time-sensitive RF operations)
+        5,  // Priority 3 (high priority for time-sensitive RF operations, increased for jamming stability)
         workerStack,
         &workerBuffer
     );
@@ -200,18 +204,21 @@ void CC1101Worker::workerTask(void* parameter) {
         if (++iterationCount % 1000 == 0) {
             UBaseType_t stackHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
             ESP_LOGI(TAG, "Stack usage: %d bytes used, %d bytes remaining", 
-                     4096 - stackHighWaterMark * sizeof(StackType_t),
+                     6144 - stackHighWaterMark * sizeof(StackType_t),
                      stackHighWaterMark * sizeof(StackType_t));
             
-            if (stackHighWaterMark < 512) {
+            if (stackHighWaterMark < 1024) {
                 ESP_LOGW(TAG, "Low stack: %d bytes remaining", stackHighWaterMark * sizeof(StackType_t));
             }
         }
         
-        // Send periodic heartbeat for widget updates (every 5 seconds)
+        // Send periodic heartbeat for widget updates (every 30 seconds)
+        // Skip if a command is currently executing to avoid interference
         TickType_t now = xTaskGetTickCount();
-        if ((now - lastHeartbeat) > pdMS_TO_TICKS(5000)) {
-            sendHeartbeat();
+        if ((now - lastHeartbeat) > pdMS_TO_TICKS(30000)) {
+            if (!commandHandler.isExecuting) {
+                sendHeartbeat();
+            }
             lastHeartbeat = now;
         }
         
@@ -236,6 +243,10 @@ void CC1101Worker::workerTask(void* parameter) {
                     
                 case CC1101State::Analyzing:
                     processAnalyzing(module);
+                    break;
+                    
+                case CC1101State::Jamming:
+                    processJamming(module);
                     break;
                     
                 case CC1101State::Idle:
@@ -287,6 +298,11 @@ void CC1101Worker::processTask(const CC1101Task& task) {
             
         case CC1101Command::GoIdle:
             handleGoIdle(task.module);
+            break;
+            
+        case CC1101Command::StartJam:
+            handleStartJam(task.module, task.frequency, task.power,
+                          task.patternType, task.customPattern, task.maxDurationMs, task.cooldownMs);
             break;
             
         default:
@@ -503,6 +519,10 @@ void CC1101Worker::handleGoIdle(int module) {
             
         case CC1101State::Analyzing:
             handleStopAnalyzer(module);
+            break;
+            
+        case CC1101State::Jamming:
+            handleStopJam(module);
             break;
             
         case CC1101State::Transmitting:
@@ -793,6 +813,10 @@ void CC1101Worker::checkAndSaveRecording(int module) {
     
     file.println();
     file.close();
+    
+    // NOTE: File time setting is disabled here to avoid stack overflow
+    // Time will be set when file is saved to Records directory via saveFileToSignalsWithName
+    // which has more stack space available
     
     // CRITICAL: Release SD mutex after file operations
     xSemaphoreGive(sdMutex);
@@ -1180,16 +1204,10 @@ void CC1101Worker::sendModeNotification(int module, CC1101State state) {
     msg.previousMode = static_cast<uint8_t>(moduleStates[module]);  // Previous state
     
     // Send as binary data
-    const char* msgPtr = reinterpret_cast<const char*>(&msg);
-    bool queued = clients.enqueueMessage(NotificationType::ModeSwitch, std::string(msgPtr, sizeof(BinaryModeSwitch)));
+    clients.notifyAllBinary(NotificationType::ModeSwitch, reinterpret_cast<const uint8_t*>(&msg), sizeof(BinaryModeSwitch));
     
-    if (queued) {
-        ESP_LOGI(TAG, "[NOTIFY] Module=%d: %d → %d (queued at %lu ms)", 
-                 module, static_cast<int>(moduleStates[module]), static_cast<int>(state), millis());
-    } else {
-        ESP_LOGE(TAG, "[NOTIFY] FAILED to queue! Module=%d: %d → %d", 
-                 module, static_cast<int>(moduleStates[module]), static_cast<int>(state));
-    }
+    ESP_LOGI(TAG, "[NOTIFY] Module=%d: %d → %d", 
+             module, static_cast<int>(moduleStates[module]), static_cast<int>(state));
 }
 
 void CC1101Worker::sendHeartbeat() {
@@ -1225,3 +1243,344 @@ void CC1101Worker::sendHeartbeat() {
              status.freeHeap);
 }
 
+// ====================================
+// Jamming implementation
+// ====================================
+
+bool CC1101Worker::startJam(int module, float frequency, int power,
+                            Device::JamPatternType patternType, const std::vector<uint8_t>* customPattern,
+                            uint32_t maxDurationMs, uint32_t cooldownMs) {
+    if (module < 0 || module >= CC1101_NUM_MODULES) {
+        ESP_LOGE(TAG, "Invalid module for jam: %d", module);
+        return false;
+    }
+    
+    CC1101Task* task = new CC1101Task();
+    task->command = CC1101Command::StartJam;
+    task->module = module;
+    task->frequency = frequency;
+    task->power = power;
+    task->patternType = patternType;
+    task->customPattern = customPattern;
+    task->maxDurationMs = maxDurationMs;
+    task->cooldownMs = cooldownMs;
+    
+    if (xQueueSend(taskQueue, &task, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to queue jam task for module %d", module);
+        delete task;
+        return false;
+    }
+    
+    return true;
+}
+
+bool CC1101Worker::stopJam(int module) {
+    if (module < 0 || module >= CC1101_NUM_MODULES) {
+        ESP_LOGE(TAG, "Invalid module for stopJam: %d", module);
+        return false;
+    }
+    
+    // Call handleStopJam directly since this is called from main task processor
+    // which already handles synchronization
+    handleStopJam(module);
+    return true;
+}
+
+void CC1101Worker::handleStartJam(int module, float frequency, int power,
+                                  Device::JamPatternType patternType, const std::vector<uint8_t>* customPattern,
+                                  uint32_t maxDurationMs, uint32_t cooldownMs) {
+    ESP_LOGI(TAG, "=== Starting jam on module %d ===", module);
+    
+    // Convert pattern type to string for logging
+    const char* patternName = "Unknown";
+    switch (patternType) {
+        case Device::JamPatternType::Random: patternName = "Random"; break;
+        case Device::JamPatternType::Alternating: patternName = "Alternating"; break;
+        case Device::JamPatternType::Continuous: patternName = "Continuous"; break;
+        case Device::JamPatternType::Custom: patternName = "Custom"; break;
+    }
+    
+    ESP_LOGI(TAG, "Input parameters: freq=%.2f MHz, power=%d, pattern=%s (%d), maxDur=%lu ms, cooldown=%lu ms",
+             frequency, power, patternName, static_cast<int>(patternType), maxDurationMs, cooldownMs);
+    
+    // Stop any ongoing operation first
+    handleGoIdle(module);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    // Validate power
+    if (power < 0 || power > 7) {
+        ESP_LOGW(TAG, "Invalid power %d, clamping to 7", power);
+        power = 7;
+    }
+    
+    // Configure module for transmission - same logic as in transmitSub
+    // Use setTxWithPreset() like transmitSub does with preset
+    ModuleCc1101& m = moduleCC1101State[module];
+    m.backupConfig();
+    
+    // Store jamming configuration (needed for pattern generation and time management)
+    JammingConfig& config = jammingConfigs[module];
+    config.frequency = frequency;
+    config.modulation = MODULATION_ASK_OOK;  // Fixed for jamming (Ook650 preset)
+    config.deviation = 2.380371;  // Fixed for jamming (from Ook650 preset)
+    config.power = power;
+    config.patternType = patternType;
+    config.maxDurationMs = maxDurationMs;
+    config.cooldownMs = cooldownMs;
+    config.startTimeMs = millis();
+    config.isCooldown = false;
+    config.cooldownStartTimeMs = 0;
+    config.useDirectPinControl = true;  // Enable direct pin control for testing
+    config.gdo0Pin = m.getOutputPin();  // GDO0 pin (inputPin is actually GDO0)
+    config.pinInitialized = false;      // Reset initialization flags
+    config.fifoInitialized = false;
+    
+    if (patternType == Device::JamPatternType::Custom && customPattern != nullptr) {
+        config.customPattern = *customPattern;
+    } else {
+        config.customPattern.clear();
+    }
+    
+    // Use Ook650 preset as base (ASK/OOK with wide bandwidth - good for jamming)
+    const uint8_t* basePreset = subghz_device_cc1101_preset_ook_650khz_async_regs;
+    
+    // Create preset bytes with power-specific PA table
+    static uint8_t jamPresetBytes[44];
+    memcpy(jamPresetBytes, basePreset, 44);
+    
+    // Use setTxWithPreset() - same as transmitSub
+    m.setTxWithPreset(frequency, jamPresetBytes, 44);
+    delay(20);  // Initial delay after preset application
+    
+    // Perform explicit calibration and wait for completion
+    // Split_MDMCFG2() is called inside calibrate() to update modulation from register
+    // This ensures optimal frequency accuracy and reduces spurious emissions
+    m.calibrate();
+    bool calComplete = m.waitForCalibration(100);  // Wait up to 100ms for calibration
+    if (!calComplete) {
+        ESP_LOGW(TAG, "[JAM] Calibration timeout, continuing anyway");
+    } else {
+        ESP_LOGI(TAG, "[JAM] Calibration completed successfully");
+    }
+    delay(20);  // Additional delay after calibration for stabilization
+    
+    // Set power using CC1101's setPA function
+    // Convert power level (0-7) to dBm for setPA
+    // 0=-30, 1=-20, 2=-15, 3=-10, 4=0, 5=5, 6=7, 7=10 dBm
+    int powerDbm = -30;
+    if (power == 1) powerDbm = -20;
+    else if (power == 2) powerDbm = -15;
+    else if (power == 3) powerDbm = -10;
+    else if (power == 4) powerDbm = 0;
+    else if (power == 5) powerDbm = 5;
+    else if (power == 6) powerDbm = 7;
+    else if (power >= 7) powerDbm = 10;
+    
+    // setPA() will automatically:
+    // 1. Select correct PA table based on frequency (MHz[currentModule] is set by setMHZ in setTxWithPreset)
+    // 2. Read modulation from MDMCFG2 register (using Split_MDMCFG2)
+    // 3. Set PA_TABLE correctly based on modulation type
+    m.setPA(powerDbm);
+    delay(20);  // Delay for PA stabilization after power setting
+    
+    // Additional delay to ensure CC1101 is fully ready for transmission
+    delay(10);
+    
+    // Log key CC1101 registers
+    byte freq2 = m.getRegisterValue(0x0D);  // FREQ2
+    byte freq1 = m.getRegisterValue(0x0E);  // FREQ1
+    byte freq0 = m.getRegisterValue(0x0F);  // FREQ0
+    
+    ESP_LOGI(TAG, "CC1101 FREQ: 0x%02X%02X%02X (%.2f MHz), power=%d", 
+             freq2, freq1, freq0, frequency, power);
+    
+    // Update state
+    moduleStates[module] = CC1101State::Jamming;
+    sendModeNotification(module, CC1101State::Jamming);
+    
+    ESP_LOGI(TAG, "=== Jam started on module %d ===", module);
+}
+
+void CC1101Worker::handleStopJam(int module) {
+    ESP_LOGI(TAG, "Stopping jam on module %d", module);
+    
+    ModuleCc1101& m = moduleCC1101State[module];
+    JammingConfig& config = jammingConfigs[module];
+    
+    // Сбрасываем пин GDO0 в LOW и флаги инициализации
+    if (config.useDirectPinControl && config.pinInitialized) {
+        digitalWrite(config.gdo0Pin, LOW);
+        config.pinInitialized = false;
+        ESP_LOGI(TAG, "[JAM] GDO0 pin %d set to LOW", config.gdo0Pin);
+    }
+    config.fifoInitialized = false;
+    
+    m.setSidle();
+    m.restoreConfig();
+    m.unlock();
+    
+    moduleStates[module] = CC1101State::Idle;
+    sendModeNotification(module, CC1101State::Idle);
+    
+    ESP_LOGI(TAG, "Jam stopped on module %d", module);
+}
+
+uint8_t CC1101Worker::generateJamPatternByte(int module, size_t index) {
+    JammingConfig& config = jammingConfigs[module];
+    
+    switch (config.patternType) {
+        case Device::JamPatternType::Random:
+            // Генерация псевдослучайного байта на основе индекса и времени
+            {
+                uint32_t seed = (millis() << 16) | (index & 0xFFFF) | (module << 24);
+                // Простой LFSR для генерации псевдослучайных чисел
+                static uint32_t lfsr[CC1101_NUM_MODULES] = {0xACE1u, 0xACE1u};
+                uint32_t l = lfsr[module];
+                l ^= l >> 7;
+                l ^= l << 9;
+                l ^= l >> 13;
+                lfsr[module] = l;
+                return static_cast<uint8_t>(l ^ seed);
+            }
+            
+        case Device::JamPatternType::Alternating:
+            // Чередующийся паттерн: 0xAA, 0x55
+            return (index % 2 == 0) ? 0xAA : 0x55;
+            
+        case Device::JamPatternType::Continuous:
+            // Непрерывная передача
+            return 0xFF;
+            
+        case Device::JamPatternType::Custom:
+            if (!config.customPattern.empty()) {
+                return config.customPattern[index % config.customPattern.size()];
+            }
+            return 0xFF; // Fallback
+            
+        default:
+            return 0xFF;
+    }
+}
+
+void CC1101Worker::generateJamPattern(int module, uint8_t* buffer, size_t length) {
+    for (size_t i = 0; i < length; i++) {
+        buffer[i] = generateJamPatternByte(module, i);
+    }
+}
+
+void CC1101Worker::processJamming(int module) {
+    JammingConfig& config = jammingConfigs[module];
+    uint32_t currentTime = millis();
+    
+    // СНАЧАЛА проверяем режим cooldown (чтобы избежать повторных входов)
+    if (config.isCooldown) {
+        uint32_t cooldownElapsed = currentTime - config.cooldownStartTimeMs;
+        if (cooldownElapsed >= config.cooldownMs) {
+            ESP_LOGI(TAG, "Module %d cooldown complete (%lu ms), resuming jam", module, cooldownElapsed);
+            config.isCooldown = false;
+            config.startTimeMs = currentTime; // Reset timer для нового цикла
+            
+            // Возобновить передачу
+            ModuleCc1101& m = moduleCC1101State[module];
+            m.setTx(config.frequency);
+        } else {
+            // Все еще в cooldown - просто выходим
+            return;
+        }
+    }
+    
+    // Теперь проверяем защиту от перегрева (только если НЕ в cooldown)
+    uint32_t elapsed = currentTime - config.startTimeMs;
+    if (config.maxDurationMs > 0 && elapsed >= config.maxDurationMs) {
+        ESP_LOGI(TAG, "Module %d jam max duration reached (%lu ms), entering cooldown for %lu ms", 
+                 module, elapsed, config.cooldownMs);
+        config.isCooldown = true;
+        config.cooldownStartTimeMs = currentTime;
+        
+        // Остановить передачу
+        ModuleCc1101& m = moduleCC1101State[module];
+        m.setSidle();
+        
+        return;
+    }
+    
+    // Генерация и передача паттерна через CC1101
+    // Используем неблокирующий подход: SendData с задержкой вместо ожидания GDO0
+    // Это работает как джамминг - постоянная отправка данных перегружает эфир
+    
+    ModuleCc1101& m = moduleCC1101State[module];
+    JammingConfig& jamConfig = jammingConfigs[module];
+    
+    // Логируем параметры периодически (каждые 100 вызовов = ~1 секунда при 10ms цикле)
+    static int logCounter[CC1101_NUM_MODULES] = {0, 0};
+    if (++logCounter[module] % 100 == 0) {
+        // Convert pattern type to string for logging
+        const char* patternName = "Unknown";
+        switch (jamConfig.patternType) {
+            case Device::JamPatternType::Random: patternName = "Random"; break;
+            case Device::JamPatternType::Alternating: patternName = "Alternating"; break;
+            case Device::JamPatternType::Continuous: patternName = "Continuous"; break;
+            case Device::JamPatternType::Custom: patternName = "Custom"; break;
+        }
+        
+        ESP_LOGI(TAG, "[JAM] Module %d: freq=%.2f MHz, mod=%d, dev=%.2f kHz, power=%d, pattern=%s (%d), elapsed=%lu ms",
+                 module, jamConfig.frequency, jamConfig.modulation, jamConfig.deviation,
+                 jamConfig.power, patternName, static_cast<int>(jamConfig.patternType), millis() - jamConfig.startTimeMs);
+        
+        // Log current frequency register
+        byte freq2 = m.getRegisterValue(0x0D);
+        byte freq1 = m.getRegisterValue(0x0E);
+        byte freq0 = m.getRegisterValue(0x0F);
+        ESP_LOGI(TAG, "[JAM] Module %d FREQ registers: 0x%02X%02X%02X", module, freq2, freq1, freq0);
+    }
+    
+    // m.setTx(config.frequency);
+    
+    // Выбираем метод джамминга: прямое управление пином или через sendData
+    if (jamConfig.useDirectPinControl) {
+        // Прямое управление пином GDO0 для непрерывного джамминга
+        // В ASK/OOK асинхронном режиме: HIGH = передача включена, LOW = передача выключена
+        // Для эффективного джамминга держим пин ПОСТОЯННО HIGH (без переключений)
+        // Это создаст непрерывный сигнал без пауз
+        byte gdo0Pin = jamConfig.gdo0Pin;
+        
+        // Устанавливаем пин в HIGH один раз при первом вызове
+        // Важно: делаем это с задержкой после инициализации CC1101 для стабильности
+        if (!jamConfig.pinInitialized) {
+            // Дополнительная задержка перед началом передачи для полной стабилизации CC1101
+            delay(10);
+            digitalWrite(gdo0Pin, HIGH);  // Непрерывная передача
+            jamConfig.pinInitialized = true;
+            ESP_LOGI(TAG, "[JAM] Direct pin control initialized: GDO0 pin=%d, state=HIGH (continuous)", gdo0Pin);
+        }
+        
+        // Пин уже установлен в HIGH, ничего не делаем - просто отдаем управление
+        // Это обеспечивает непрерывную передачу без пауз
+    } else {
+        // Метод через непрерывную передачу FIFO
+        // Генерируем паттерн для передачи (64 байт - максимальный размер для FIFO)
+        static uint8_t pattern[64];
+        
+        if (!jamConfig.fifoInitialized) {
+            // Инициализация: заполняем FIFO и запускаем непрерывную передачу
+            generateJamPattern(module, pattern, 64);
+            
+            // Записываем данные в TX FIFO
+            m.writeToTxFifo(pattern, 64);
+            
+            // Запускаем передачу (уже в TX режиме после setTxWithPreset)
+            // В асинхронном режиме данные будут передаваться непрерывно
+            jamConfig.fifoInitialized = true;
+            
+            ESP_LOGI(TAG, "[JAM] FIFO continuous TX initialized: pattern size=64 bytes");
+            ESP_LOGI(TAG, "[JAM] Module %d pattern (first 8 bytes): %02X %02X %02X %02X %02X %02X %02X %02X",
+                     module, pattern[0], pattern[1], pattern[2], pattern[3], pattern[4], pattern[5], pattern[6], pattern[7]);
+        }
+        
+        // Периодически пополняем FIFO, если он опустошается
+        // Но в асинхронном режиме это не требуется - данные передаются напрямую через GDO0
+        // Этот код оставлен для совместимости, но фактически не используется
+    }
+    
+    // Отдаем управление другим задачам
+    taskYIELD();
+}

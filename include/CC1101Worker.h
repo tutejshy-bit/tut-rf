@@ -16,6 +16,7 @@
 #include "StreamingSubFileParser.h"
 #include "StreamingPulsePayload.h"
 #include "PulsePayload.h"
+#include "DeviceTasks.h"
 #include <sstream>
 
 // Receive data structure - moved from Recorder.h
@@ -47,7 +48,8 @@ enum class CC1101Command {
     Configure,        // настроить модуль
     StartAnalyzer,    // начать frequency analyzer
     StopAnalyzer,     // остановить analyzer
-    GoIdle            // в режим ожидания
+    GoIdle,           // в режим ожидания
+    StartJam          // начать джамминг
 };
 
 // Current operation state per module
@@ -56,7 +58,8 @@ enum class CC1101State {
     Detecting,
     Recording,
     Transmitting,
-    Analyzing
+    Analyzing,
+    Jamming
 };
 
 // DetectedSignal structure (simplified from Detector.h)
@@ -98,6 +101,13 @@ struct CC1101Task {
     int repeat;
     int pathType;
     
+    // For jamming
+    int power;
+    Device::JamPatternType patternType;
+    const std::vector<uint8_t>* customPattern;
+    uint32_t maxDurationMs;
+    uint32_t cooldownMs;
+    
     CC1101Task() : 
         command(CC1101Command::GoIdle),
         module(0),
@@ -110,7 +120,12 @@ struct CC1101Task {
         dataRate(3.79372),
         preset("Ook650"),
         repeat(1),
-        pathType(0) {}
+        pathType(0),
+        power(7),
+        patternType(Device::JamPatternType::Random),
+        customPattern(nullptr),
+        maxDurationMs(60000),
+        cooldownMs(5000) {}
 };
 
 class CC1101Worker {
@@ -129,9 +144,16 @@ public:
     static bool goIdle(int module);
     static bool startAnalyzer(int module, float startFreq, float endFreq, float step, uint32_t dwellTime);
     static bool stopAnalyzer(int module);
+    static bool startJam(int module, float frequency, int power, 
+                         Device::JamPatternType patternType, const std::vector<uint8_t>* customPattern,
+                         uint32_t maxDurationMs, uint32_t cooldownMs);
+    static bool stopJam(int module);
     
     // Get current state
     static CC1101State getState(int module);
+    
+    // Find first idle module
+    static int findFirstIdleModule();
 
 private:
     static void workerTask(void* parameter);
@@ -146,11 +168,16 @@ private:
     static void handleStartAnalyzer(int module, float startFreq, float endFreq, float step, uint32_t dwellTime);
     static void handleStopAnalyzer(int module);
     static void handleGoIdle(int module);
+    static void handleStartJam(int module, float frequency, int power,
+                               Device::JamPatternType patternType, const std::vector<uint8_t>* customPattern,
+                               uint32_t maxDurationMs, uint32_t cooldownMs);
+    static void handleStopJam(int module);
     
     // Worker loop handlers
     static void processDetecting(int module);
     static void processRecording(int module);
     static void processAnalyzing(int module);
+    static void processJamming(int module);
     
     // Detection logic (from Detector)
     static bool detectSignal(int module, int minRssi, bool isBackground);
@@ -178,8 +205,6 @@ private:
         
         return true;
     }
-    
-    static int findFirstIdleModule();
     
     // Private transmission helpers
     static std::vector<int> getCountOfOnOffBits(const std::string& bits);
@@ -214,6 +239,30 @@ private:
         std::string preset;
     };
     static RecordingConfig recordingConfigs[CC1101_NUM_MODULES];
+    
+    // Jamming config per module
+    struct JammingConfig {
+        float frequency;
+        int modulation;
+        float deviation;
+        int power;
+        Device::JamPatternType patternType;
+        std::vector<uint8_t> customPattern;
+        uint32_t maxDurationMs;
+        uint32_t cooldownMs;
+        uint32_t startTimeMs;
+        bool isCooldown;
+        uint32_t cooldownStartTimeMs;
+        bool useDirectPinControl;  // Use direct pin control instead of sendData
+        byte gdo0Pin;  // GDO0 pin for direct control
+        bool pinInitialized;  // Flag to track if pin was initialized for continuous TX
+        bool fifoInitialized;  // Flag to track if FIFO was initialized
+    };
+    static JammingConfig jammingConfigs[CC1101_NUM_MODULES];
+    
+    // Pattern generation helpers
+    static uint8_t generateJamPatternByte(int module, size_t index);
+    static void generateJamPattern(int module, uint8_t* buffer, size_t length);
     
     // Callbacks
     static SignalDetectedCallback signalDetectedCallback;

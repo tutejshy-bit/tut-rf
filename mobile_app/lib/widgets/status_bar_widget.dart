@@ -1,43 +1,155 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../l10n/app_localizations.dart';
 import '../providers/ble_provider.dart';
 import '../providers/notification_provider.dart';
+import '../theme/app_colors.dart';
+import 'quick_connect_widget.dart';
+import 'module_status_widget.dart';
 
-class StatusBarWidget extends StatelessWidget {
+class StatusBarWidget extends StatefulWidget {
   const StatusBarWidget({super.key});
 
   @override
+  State<StatusBarWidget> createState() => _StatusBarWidgetState();
+}
+
+class _StatusBarWidgetState extends State<StatusBarWidget> {
+  bool _isExpanded = false;
+
+  @override
   Widget build(BuildContext context) {
-    return Container(
-      height: 36, // Компактный размер (как status bar)
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        border: Border(
-          bottom: BorderSide(
-            color: Theme.of(context).dividerColor.withOpacity(0.2),
-            width: 1,
+    return Stack(
+      children: [
+        // Компактный статус бар
+        Positioned(
+          top: 0,
+          left: 0,
+          right: 0,
+          child: InkWell(
+            onTap: () {
+              setState(() {
+                _isExpanded = !_isExpanded;
+              });
+            },
+            child: Container(
+              height: 36,
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surface,
+                border: Border(
+                  bottom: BorderSide(
+                    color: Theme.of(context).dividerColor.withOpacity(0.2),
+                    width: 1,
+                  ),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.primaryBackground.withOpacity(0.3),
+                    blurRadius: 4,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: Row(
+                children: [
+                  // Левая часть: иконки статуса (5-6 иконок)
+                  _buildStatusIcons(context),
+                  
+                  // Разделитель
+                  Container(
+                    width: 1,
+                    height: 24,
+                    margin: const EdgeInsets.symmetric(horizontal: 8),
+                    color: Theme.of(context).dividerColor.withOpacity(0.3),
+                  ),
+                  
+                  // Правая часть: область уведомлений
+                  Expanded(
+                    child: _buildNotificationArea(context),
+                  ),
+                  
+                  // Иконка раскрытия
+                  Icon(
+                    _isExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                    size: 20,
+                    color: Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.6),
+                  ),
+                  const SizedBox(width: 8),
+                ],
+              ),
+            ),
           ),
         ),
-      ),
-      child: Row(
-        children: [
-          // Левая часть: иконки статуса (5-6 иконок)
-          _buildStatusIcons(context),
-          
-          // Разделитель
-          Container(
-            width: 1,
-            height: 24,
-            margin: const EdgeInsets.symmetric(horizontal: 8),
-            color: Theme.of(context).dividerColor.withOpacity(0.3),
+        
+        // Раскрытое содержимое с фоном и оттенением
+        if (_isExpanded) ...[
+          // Затемнение фона
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: () {
+                setState(() {
+                  _isExpanded = false;
+                });
+              },
+              child: Container(
+                color: AppColors.primaryBackground.withOpacity(0.5),
+              ),
+            ),
           ),
-          
-          // Правая часть: область уведомлений
-          Expanded(
-            child: _buildNotificationArea(context),
+          // Контент поверх затемнения
+          Positioned(
+            top: 36,
+            left: 0,
+            right: 0,
+            child: Container(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.6,
+              ),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surface,
+                border: Border(
+                  bottom: BorderSide(
+                    color: Theme.of(context).dividerColor.withOpacity(0.2),
+                    width: 1,
+                  ),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.primaryBackground.withOpacity(0.4),
+                    blurRadius: 8,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Quick Connect Widget (виджет с девайсом и кнопкой отключиться)
+                    const QuickConnectWidget(),
+                    
+                    const SizedBox(height: 12),
+                    
+                    // Module Status Widget
+                    Consumer<BleProvider>(
+                      builder: (context, bleProvider, child) {
+                        if (bleProvider.isConnected && bleProvider.cc1101Modules != null) {
+                          return ModuleStatusWidget(
+                            cc1101Modules: bleProvider.cc1101Modules!,
+                            deviceInfo: {'freeHeap': bleProvider.freeHeap ?? 0},
+                          );
+                        }
+                        return const SizedBox.shrink();
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
         ],
-      ),
+      ],
     );
   }
 
@@ -55,11 +167,11 @@ class StatusBarWidget extends StatelessWidget {
                     ? Icons.bluetooth_connected 
                     : Icons.bluetooth_disabled,
                 color: bleProvider.isConnected 
-                    ? Colors.blue 
-                    : Colors.grey,
+                    ? AppColors.info 
+                    : AppColors.disabledText,
                 tooltip: bleProvider.isConnected 
-                    ? 'Connected: ${bleProvider.connectedDevice?.platformName ?? "Unknown"}' 
-                    : 'Not connected',
+                    ? AppLocalizations.of(context)!.connectedToDevice(bleProvider.connectedDevice?.platformName ?? AppLocalizations.of(context)!.unknown)
+                    : AppLocalizations.of(context)!.notConnected,
               ),
               
               const SizedBox(width: 6),
@@ -67,10 +179,10 @@ class StatusBarWidget extends StatelessWidget {
               // 2. Module 0 Status
               if (bleProvider.isConnected && bleProvider.cc1101Modules != null && bleProvider.cc1101Modules!.isNotEmpty)
                 _StatusIcon(
-                  icon: _getModuleIcon(bleProvider.cc1101Modules![0]['state'] ?? 0),
-                  color: _getModuleColor(bleProvider.cc1101Modules![0]['state'] ?? 0),
-                  tooltip: 'Module 0: ${_getModuleStateName(bleProvider.cc1101Modules![0]['state'] ?? 0)}',
-                  label: '0',
+                  icon: Icons.settings_input_antenna,
+                  color: _getModuleColorFromMode(bleProvider.cc1101Modules![0]['mode'] ?? 'Idle'),
+                  tooltip: '${AppLocalizations.of(context)!.subGhzModule(1)}: ${bleProvider.cc1101Modules![0]['mode'] ?? AppLocalizations.of(context)!.unknown}',
+                  label: '1',
                 ),
               
               const SizedBox(width: 6),
@@ -78,10 +190,10 @@ class StatusBarWidget extends StatelessWidget {
               // 3. Module 1 Status
               if (bleProvider.isConnected && bleProvider.cc1101Modules != null && bleProvider.cc1101Modules!.length > 1)
                 _StatusIcon(
-                  icon: _getModuleIcon(bleProvider.cc1101Modules![1]['state'] ?? 0),
-                  color: _getModuleColor(bleProvider.cc1101Modules![1]['state'] ?? 0),
-                  tooltip: 'Module 1: ${_getModuleStateName(bleProvider.cc1101Modules![1]['state'] ?? 0)}',
-                  label: '1',
+                  icon: Icons.settings_input_antenna,
+                  color: _getModuleColorFromMode(bleProvider.cc1101Modules![1]['mode'] ?? 'Idle'),
+                  tooltip: '${AppLocalizations.of(context)!.subGhzModule(2)}: ${bleProvider.cc1101Modules![1]['mode'] ?? AppLocalizations.of(context)!.unknown}',
+                  label: '2',
                 ),
               
               const SizedBox(width: 6),
@@ -90,8 +202,8 @@ class StatusBarWidget extends StatelessWidget {
               if (bleProvider.isConnected)
                 _StatusIcon(
                   icon: Icons.sd_card,
-                  color: Colors.orange,
-                  tooltip: 'SD Card ready',
+                  color: AppColors.primaryText,
+                  tooltip: AppLocalizations.of(context)!.sdCardReady,
                 ),
               
               const SizedBox(width: 6),
@@ -115,7 +227,7 @@ class StatusBarWidget extends StatelessWidget {
         // Показываем либо текущее уведомление, либо кнопку для просмотра истории
         if (notification == null) {
           if (!hasHistory) {
-            return const SizedBox.shrink();
+            return const SizedBox(width: 1, height: 36);
           }
           // Показываем кнопку для просмотра истории
           return InkWell(
@@ -186,7 +298,7 @@ class StatusBarWidget extends StatelessWidget {
                       color: Theme.of(context).colorScheme.primary,
                     ),
                     const SizedBox(width: 8),
-                    const Text('Notifications'),
+                    Text(AppLocalizations.of(context)!.notifications),
                   ],
                 ),
                 actions: [
@@ -199,7 +311,7 @@ class StatusBarWidget extends StatelessWidget {
               body: !hasHistory
                   ? Center(
                       child: Text(
-                        'No notifications',
+                        AppLocalizations.of(context)!.noNotifications,
                         style: TextStyle(
                           color: Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.5),
                         ),
@@ -227,7 +339,7 @@ class StatusBarWidget extends StatelessWidget {
                                     Navigator.pop(context);
                                   },
                                   icon: const Icon(Icons.delete_outline, size: 18),
-                                  label: const Text('Clear All'),
+                                  label: Text(AppLocalizations.of(context)!.clearAll),
                                 ),
                               ],
                             ),
@@ -263,11 +375,11 @@ class StatusBarWidget extends StatelessWidget {
 
   Color _getModuleColor(int state) {
     switch (state) {
-      case 0: return Colors.grey; // Idle
-      case 1: return Colors.blue; // Detecting
-      case 2: return Colors.red; // Recording
-      case 3: return Colors.green; // Transmitting
-      default: return Colors.grey; // Unknown
+      case 0: return AppColors.idle; // Idle
+      case 1: return AppColors.searching; // Detecting
+      case 2: return AppColors.recording; // Recording
+      case 3: return AppColors.transmitting; // Transmitting
+      default: return AppColors.disabledText; // Unknown
     }
   }
 
@@ -279,6 +391,20 @@ class StatusBarWidget extends StatelessWidget {
       case 3: return 'Transmitting';
       default: return 'Unknown';
     }
+  }
+
+  Color _getModuleColorFromMode(String mode) {
+    final statusLower = mode.toLowerCase();
+    // Для Idle используем primaryText (как SD и Heap)
+    if (statusLower == 'idle') {
+      return AppColors.primaryText;
+    }
+    // Для transmitting/sendsignal используем зелёный
+    if (statusLower == 'sendsignal' || statusLower == 'transmitting') {
+      return AppColors.success;
+    }
+    // Для остальных статусов используем стандартную функцию
+    return AppColors.getModuleStatusColor(mode);
   }
 }
 
@@ -343,10 +469,11 @@ class _MemoryStatusIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final freeKB = freeHeap / 1024;
-    final color = freeKB > 50 ? Colors.green : freeKB > 30 ? Colors.orange : Colors.red;
+    final color = freeKB > 50 ? AppColors.success : freeKB > 30 ? AppColors.primaryText : AppColors.error;
+    final l10n = AppLocalizations.of(context)!;
     
     return Tooltip(
-      message: 'Free Heap: ${freeKB.toStringAsFixed(1)} KB',
+      message: l10n.freeHeap(freeKB.toStringAsFixed(1)),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -377,7 +504,7 @@ class _NotificationListItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final timeAgo = _formatTimeAgo(notification.timestamp);
+    final timeAgo = _formatTimeAgo(context, notification.timestamp);
     
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -431,18 +558,19 @@ class _NotificationListItem extends StatelessWidget {
     );
   }
 
-  String _formatTimeAgo(DateTime timestamp) {
+  String _formatTimeAgo(BuildContext context, DateTime timestamp) {
     final now = DateTime.now();
     final difference = now.difference(timestamp);
+    final l10n = AppLocalizations.of(context)!;
     
     if (difference.inSeconds < 60) {
-      return 'Just now';
+      return l10n.justNow;
     } else if (difference.inMinutes < 60) {
-      return '${difference.inMinutes}m ago';
+      return '${difference.inMinutes}${l10n.minutesAgo}';
     } else if (difference.inHours < 24) {
-      return '${difference.inHours}h ago';
+      return '${difference.inHours}${l10n.hoursAgo}';
     } else {
-      return '${difference.inDays}d ago';
+      return '${difference.inDays}${l10n.daysAgo}';
     }
   }
 }

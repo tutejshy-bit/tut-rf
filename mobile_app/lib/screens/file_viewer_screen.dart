@@ -1,24 +1,30 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
+import '../l10n/app_localizations.dart';
 import '../providers/ble_provider.dart';
 import '../providers/notification_provider.dart';
 import '../services/file_parsers/file_parser_factory.dart';
 import '../services/file_parsers/base_file_parser.dart';
 import '../services/signal_processing/signal_data.dart';
+import '../widgets/transmit_file_dialog.dart';
+import '../theme/app_colors.dart';
 
 class FileViewerScreen extends StatefulWidget {
   final dynamic fileItem;
   final String filePath;
+  final int pathType;  // 0=RECORDS, 1=SIGNALS, 2=PRESETS, 3=TEMP
 
   const FileViewerScreen({
     super.key,
     required this.fileItem,
     required this.filePath,
+    this.pathType = 0,
   });
 
   @override
@@ -76,19 +82,33 @@ class _FileViewerScreenState extends State<FileViewerScreen>
       
       // Логируем путь к файлу для отладки
       
-      // Determine basePath from filePath
-      String? basePath;
-      String fileName = widget.filePath;
-      if (widget.filePath.startsWith('/DATA/SIGNALS/')) {
-        basePath = '/DATA/SIGNALS';
-        fileName = widget.filePath.substring('/DATA/SIGNALS/'.length);
-      } else if (widget.filePath.startsWith('/DATA/RECORDS/')) {
-        basePath = '/DATA/RECORDS';
-        fileName = widget.filePath.substring('/DATA/RECORDS/'.length);
+      // Determine basePath from pathType
+      String basePath;
+      switch (widget.pathType) {
+        case 1:
+          basePath = '/DATA/SIGNALS';
+          break;
+        case 2:
+          basePath = '/DATA/PRESETS';
+          break;
+        case 3:
+          basePath = '/DATA/TEMP';
+          break;
+        default:
+          basePath = '/DATA/RECORDS';
       }
       
+      // Use full path with directory (widget.filePath already contains the relative path)
+      // Remove leading slash if present to get relative path
+      String filePath = widget.filePath;
+      if (filePath.startsWith('/')) {
+        filePath = filePath.substring(1);
+      }
+      
+      print('Loading file: path="$filePath", pathType=${widget.pathType}');
+      
       // Читаем файл с ESP (флаг isLoadingFileContent устанавливается внутри)
-      final content = await bleProvider.readFileContent(fileName, basePath: basePath);
+      final content = await bleProvider.readFileContent(filePath, basePath: basePath);
       
       if (mounted) {
         // Проверяем, не является ли ответ ошибкой от ESP
@@ -186,7 +206,7 @@ class _FileViewerScreenState extends State<FileViewerScreen>
         
         if (mounted) {
           final notificationProvider = Provider.of<NotificationProvider>(context, listen: false);
-          notificationProvider.showSuccess('File "${widget.fileItem.name}" downloaded successfully');
+          notificationProvider.showSuccess(AppLocalizations.of(context)!.fileDownloadedSuccessfully(widget.fileItem.name));
         }
       }
     } catch (e) {
@@ -197,57 +217,90 @@ class _FileViewerScreenState extends State<FileViewerScreen>
         });
         
         final notificationProvider = Provider.of<NotificationProvider>(context, listen: false);
-        notificationProvider.showError('Download failed: $e');
+        notificationProvider.showError(AppLocalizations.of(context)!.downloadFailed(e.toString()));
       }
     }
   }
 
   Future<void> _saveFileToDevice(String content) async {
     try {
-      // Получаем путь для сохранения
+      // Конвертируем строку в байты для сохранения
+      final bytes = Uint8List.fromList(utf8.encode(content));
+      print('_saveFileToDevice: Starting save process for file: ${widget.fileItem.name}, size: ${bytes.length} bytes');
+      
+      // На Android и iOS FilePicker.saveFile требует передачи байтов
       String? outputFile = await FilePicker.platform.saveFile(
-        dialogTitle: 'Save file as...',
+        dialogTitle: AppLocalizations.of(context)!.saveFileAs,
         fileName: widget.fileItem.name,
+        bytes: bytes, // Передаем байты для Android/iOS
         allowedExtensions: null, // Allow any file type
       );
       
-      if (outputFile != null) {
-        // Создаем файл и записываем содержимое
-        final file = File(outputFile);
-        await file.writeAsString(content);
+      if (outputFile != null && outputFile.isNotEmpty) {
+        print('_saveFileToDevice: File saved successfully to: $outputFile');
         
-        if (mounted) {
-          final notificationProvider = Provider.of<NotificationProvider>(context, listen: false);
-          notificationProvider.showSuccess('File saved to: ${file.path}');
+        // Проверяем, что файл действительно существует
+        final file = File(outputFile);
+        if (await file.exists()) {
+          final fileSize = await file.length();
+          print('_saveFileToDevice: File verified, size: $fileSize bytes');
+          
+          if (mounted) {
+            final notificationProvider = Provider.of<NotificationProvider>(context, listen: false);
+            notificationProvider.showSuccess(AppLocalizations.of(context)!.fileSaved(outputFile));
+          }
+        } else {
+          // На некоторых платформах FilePicker сам сохраняет файл, проверяем через небольшую задержку
+          await Future.delayed(const Duration(milliseconds: 100));
+          if (await file.exists()) {
+            if (mounted) {
+              final notificationProvider = Provider.of<NotificationProvider>(context, listen: false);
+              notificationProvider.showSuccess(AppLocalizations.of(context)!.fileSaved(outputFile));
+            }
+          } else {
+            throw Exception('File was not created at path: $outputFile');
+          }
         }
       } else {
+        print('_saveFileToDevice: User cancelled save dialog, copying to clipboard');
         // Если пользователь отменил сохранение, копируем в буфер обмена
         await Clipboard.setData(ClipboardData(text: content));
         
         if (mounted) {
           final notificationProvider = Provider.of<NotificationProvider>(context, listen: false);
-          notificationProvider.showInfo('File content copied to clipboard');
+          notificationProvider.showInfo(AppLocalizations.of(context)!.fileContentCopiedToClipboard);
         }
       }
     } catch (e) {
-      // В случае ошибки сохраняем в Downloads или копируем в буфер
+      print('_saveFileToDevice: Error during save: $e');
+      // В случае ошибки сохраняем в Documents как fallback
       try {
+        print('_saveFileToDevice: Trying fallback to Documents directory');
         final directory = await getApplicationDocumentsDirectory();
         final fileName = widget.fileItem.name;
         final file = File('${directory.path}/$fileName');
         await file.writeAsString(content);
         
-        if (mounted) {
-          final notificationProvider = Provider.of<NotificationProvider>(context, listen: false);
-          notificationProvider.showWarning('File saved to: ${file.path}');
+        // Проверяем, что файл действительно сохранен
+        if (await file.exists()) {
+          final fileSize = await file.length();
+          print('_saveFileToDevice: File saved to Documents, size: $fileSize bytes');
+          
+          if (mounted) {
+            final notificationProvider = Provider.of<NotificationProvider>(context, listen: false);
+            notificationProvider.showWarning(AppLocalizations.of(context)!.fileSavedToDocuments(file.path));
+          }
+        } else {
+          throw Exception('File was written but does not exist');
         }
       } catch (e2) {
+        print('_saveFileToDevice: Fallback also failed: $e2');
         // Последний резерв - копируем в буфер обмена
         await Clipboard.setData(ClipboardData(text: content));
         
         if (mounted) {
           final notificationProvider = Provider.of<NotificationProvider>(context, listen: false);
-          notificationProvider.showError('Could not save file. Content copied to clipboard. Error: $e');
+          notificationProvider.showError(AppLocalizations.of(context)!.couldNotSaveFile(e.toString()));
         }
       }
     }
@@ -267,103 +320,12 @@ class _FileViewerScreenState extends State<FileViewerScreen>
   Future<void> _transmitSignal() async {
     if (!mounted) return;
     
-    final bleProvider = Provider.of<BleProvider>(context, listen: false);
-    
-    if (!bleProvider.isConnected) {
-      final notificationProvider = Provider.of<NotificationProvider>(context, listen: false);
-      notificationProvider.showError('Not connected to device');
-      return;
-    }
-    
-    // Show confirmation dialog
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.warning_amber, color: Colors.orange),
-            SizedBox(width: 8),
-            Text('Transmit Signal'),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('This will transmit the signal from this file.'),
-            const SizedBox(height: 16),
-            Text(
-              'File: ${widget.fileItem.name}',
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.orange.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.orange.withOpacity(0.3)),
-              ),
-              child: const Row(
-                children: [
-                  Icon(Icons.info_outline, size: 20, color: Colors.orange),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Only use in controlled environments. Check local regulations.',
-                      style: TextStyle(fontSize: 12),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton.icon(
-            onPressed: () => Navigator.of(context).pop(true),
-            icon: const Icon(Icons.send),
-            label: const Text('Transmit'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.orange,
-              foregroundColor: Colors.white,
-            ),
-          ),
-        ],
-      ),
+    await TransmitFileDialog.showAndTransmit(
+      context,
+      fileName: widget.fileItem.name,
+      filePath: widget.filePath,
+      pathType: widget.pathType,
     );
-    
-    if (confirmed != true || !mounted) return;
-    
-    try {
-      // Determine basePath based on filePath
-      String? basePath;
-      String fileName = widget.filePath;
-      
-      if (widget.filePath.startsWith('/DATA/SIGNALS/')) {
-        basePath = '/DATA/SIGNALS';
-        fileName = widget.filePath.substring('/DATA/SIGNALS/'.length);
-      } else if (widget.filePath.startsWith('/DATA/RECORDS/')) {
-        basePath = '/DATA/RECORDS';
-        fileName = widget.filePath.substring('/DATA/RECORDS/'.length);
-      }
-      
-      await bleProvider.transmitFromFile(fileName, basePath: basePath);
-      
-      if (mounted) {
-        final notificationProvider = Provider.of<NotificationProvider>(context, listen: false);
-        notificationProvider.showSuccess('Signal transmission started: ${widget.fileItem.name}');
-      }
-    } catch (e) {
-      if (mounted) {
-        final notificationProvider = Provider.of<NotificationProvider>(context, listen: false);
-        notificationProvider.showError('Transmission failed: $e');
-      }
-    }
   }
 
   Widget _buildHexView(String content) {
@@ -439,19 +401,19 @@ class _FileViewerScreenState extends State<FileViewerScreen>
           const Icon(
             Icons.image_not_supported,
             size: 64,
-            color: Colors.grey,
+            color: AppColors.secondaryText,
           ),
           const SizedBox(height: 16),
           Text(
-            'Image preview not supported yet',
+            AppLocalizations.of(context)!.imagePreviewNotSupported,
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              color: Colors.grey,
+              color: AppColors.secondaryText,
             ),
           ),
           const SizedBox(height: 8),
           ElevatedButton(
             onPressed: () => _tabController.animateTo(0), // Switch to text view
-            child: const Text('View as Text'),
+            child: Text(AppLocalizations.of(context)!.viewAsText),
           ),
         ],
       ),
@@ -467,13 +429,13 @@ class _FileViewerScreenState extends State<FileViewerScreen>
             Icon(
               Icons.error_outline,
               size: 64,
-              color: Colors.grey[400],
+              color: AppColors.secondaryText,
             ),
             const SizedBox(height: 16),
             Text(
-              'Failed to parse file',
+              AppLocalizations.of(context)!.failedToParseFile,
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                color: Colors.grey[600],
+                color: AppColors.secondaryText,
               ),
             ),
             const SizedBox(height: 8),
@@ -481,7 +443,7 @@ class _FileViewerScreenState extends State<FileViewerScreen>
             Text(
                 parseResult!.errors.first,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Colors.grey[500],
+                  color: AppColors.secondaryText,
               ),
               textAlign: TextAlign.center,
             ),
@@ -504,26 +466,27 @@ class _FileViewerScreenState extends State<FileViewerScreen>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Signal Parameters',
+                    AppLocalizations.of(context)!.signalParameters,
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                       fontWeight: FontWeight.bold,
+                      color: AppColors.primaryText,
                     ),
                   ),
                   const SizedBox(height: 12),
                   if (signalData.frequency != null)
-                    _buildInfoRow('Frequency', '${signalData.frequency!.toStringAsFixed(2)} MHz'),
+                    _buildInfoRow(AppLocalizations.of(context)!.frequency, '${signalData.frequency!.toStringAsFixed(2)} MHz'),
                   if (signalData.modulation != null)
-                    _buildInfoRow('Modulation', signalData.modulation!),
+                    _buildInfoRow(AppLocalizations.of(context)!.modulation, signalData.modulation!),
                   if (signalData.dataRate != null)
-                    _buildInfoRow('Data Rate', '${signalData.dataRate!.toStringAsFixed(1)} kBaud'),
+                    _buildInfoRow(AppLocalizations.of(context)!.dataRate, '${signalData.dataRate!.toStringAsFixed(1)} kBaud'),
                   if (signalData.deviation != null)
-                    _buildInfoRow('Deviation', '±${signalData.deviation!.toStringAsFixed(1)} kHz'),
+                    _buildInfoRow(AppLocalizations.of(context)!.deviation, '±${signalData.deviation!.toStringAsFixed(1)} kHz'),
                   if (signalData.rxBandwidth != null)
-                    _buildInfoRow('RX Bandwidth', '${signalData.rxBandwidth!.toStringAsFixed(1)} kHz'),
+                    _buildInfoRow(AppLocalizations.of(context)!.rxBandwidth, '${signalData.rxBandwidth!.toStringAsFixed(1)} kHz'),
                   if (signalData.protocol != null)
-                    _buildInfoRow('Protocol', signalData.protocol!),
+                    _buildInfoRow(AppLocalizations.of(context)!.protocol, signalData.protocol!),
                   if (signalData.preset != null)
-                    _buildInfoRow('Preset', signalData.preset!),
+                    _buildInfoRow(AppLocalizations.of(context)!.preset, signalData.preset!),
                 ],
               ),
             ),
@@ -540,20 +503,22 @@ class _FileViewerScreenState extends State<FileViewerScreen>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Signal Data',
+                      AppLocalizations.of(context)!.signalData,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.bold,
+                        color: AppColors.primaryText,
                       ),
                     ),
                     const SizedBox(height: 12),
                     if (signalData.samplesCount != null)
-                      _buildInfoRow('Samples Count', signalData.samplesCount!.toString()),
+                      _buildInfoRow(AppLocalizations.of(context)!.samplesCount, signalData.samplesCount!.toString()),
                     if (signalData.raw != null) ...[
                       const SizedBox(height: 8),
                       Text(
-                        'Raw Data:',
+                        AppLocalizations.of(context)!.rawData,
                         style: Theme.of(context).textTheme.titleSmall?.copyWith(
                           fontWeight: FontWeight.bold,
+                          color: AppColors.primaryText,
                         ),
                       ),
                       const SizedBox(height: 8),
@@ -576,7 +541,7 @@ class _FileViewerScreenState extends State<FileViewerScreen>
                     if (signalData.binary != null) ...[
                       const SizedBox(height: 8),
                       Text(
-                        'Binary Data:',
+                        AppLocalizations.of(context)!.binaryData,
                         style: Theme.of(context).textTheme.titleSmall?.copyWith(
                           fontWeight: FontWeight.bold,
                         ),
@@ -623,7 +588,7 @@ class _FileViewerScreenState extends State<FileViewerScreen>
                         ),
                         const SizedBox(width: 8),
                         Text(
-                          'Warnings',
+                          AppLocalizations.of(context)!.warnings,
                           style: Theme.of(context).textTheme.titleMedium?.copyWith(
                             fontWeight: FontWeight.bold,
                             color: Colors.orange[700],
@@ -675,8 +640,8 @@ class _FileViewerScreenState extends State<FileViewerScreen>
 
   Widget _buildHexTab() {
     if (fileContent == null) {
-      return const Center(
-        child: Text('No content available'),
+      return Center(
+        child: Text(AppLocalizations.of(context)!.noContentAvailable),
       );
     }
     
@@ -685,8 +650,8 @@ class _FileViewerScreenState extends State<FileViewerScreen>
 
   Widget _buildRawTab() {
     if (fileContent == null) {
-      return const Center(
-        child: Text('No content available'),
+      return Center(
+        child: Text(AppLocalizations.of(context)!.noContentAvailable),
       );
     }
     
@@ -700,72 +665,140 @@ class _FileViewerScreenState extends State<FileViewerScreen>
         toolbarHeight: 48, // Compact toolbar
         title: Row(
           children: [
-            Icon(
-              widget.fileItem.isDirectory ? Icons.folder : Icons.insert_drive_file,
-              color: Theme.of(context).colorScheme.onPrimary,
-              size: 20,
-            ),
-            const SizedBox(width: 8),
             Expanded(
-              child: Text(
-                widget.fileItem.name,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onPrimary,
+              child: GestureDetector(
+                onTap: () {
+                  // Показываем полное имя файла в диалоге
+                  showDialog(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: Text(
+                        AppLocalizations.of(context)!.file,
+                        style: const TextStyle(color: AppColors.primaryText),
+                      ),
+                      content: SelectableText(
+                        widget.fileItem.name,
+                        style: const TextStyle(color: AppColors.primaryText),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          child: Text(AppLocalizations.of(context)!.ok),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+                child: Text(
+                  widget.fileItem.name,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onPrimary,
+                  ),
+                  overflow: TextOverflow.ellipsis,
                 ),
-                overflow: TextOverflow.ellipsis,
               ),
             ),
+            if (!isLoading && fileContent != null)
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.more_vert),
+                iconColor: Theme.of(context).colorScheme.onPrimary,
+                onSelected: (value) async {
+                  switch (value) {
+                    case 'copy':
+                      await Clipboard.setData(ClipboardData(text: fileContent!));
+                      if (mounted) {
+                        final notificationProvider = Provider.of<NotificationProvider>(context, listen: false);
+                        notificationProvider.showInfo(AppLocalizations.of(context)!.fileContentCopiedToClipboard);
+                      }
+                      break;
+                    case 'download':
+                      if (!isDownloading) {
+                        await _downloadFile();
+                      }
+                      break;
+                    case 'transmit':
+                      if (!isLoading && _isTransmittableFile()) {
+                        await _transmitSignal();
+                      }
+                      break;
+                    case 'reload':
+                      await _loadFileContent();
+                      break;
+                  }
+                },
+                itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+                  PopupMenuItem<String>(
+                    value: 'copy',
+                    child: Row(
+                      children: [
+                        Icon(Icons.copy, size: 20, color: Theme.of(context).iconTheme.color),
+                        const SizedBox(width: 12),
+                        Text(AppLocalizations.of(context)!.copyToClipboard),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem<String>(
+                    value: 'download',
+                    enabled: !isDownloading,
+                    child: Row(
+                      children: [
+                        isDownloading
+                            ? SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    Theme.of(context).colorScheme.primary,
+                                  ),
+                                ),
+                              )
+                            : Icon(Icons.download, size: 20, color: Theme.of(context).iconTheme.color),
+                        const SizedBox(width: 12),
+                        Text(AppLocalizations.of(context)!.downloadFile),
+                      ],
+                    ),
+                  ),
+                  if (_isTransmittableFile())
+                    PopupMenuItem<String>(
+                      value: 'transmit',
+                      enabled: !isLoading,
+                      child: Row(
+                        children: [
+                          Icon(Icons.send, size: 20, color: Theme.of(context).iconTheme.color),
+                          const SizedBox(width: 12),
+                          Text(AppLocalizations.of(context)!.transmitSignal),
+                        ],
+                      ),
+                    ),
+                  PopupMenuItem<String>(
+                    value: 'reload',
+                    enabled: !isLoading,
+                    child: Row(
+                      children: [
+                        isLoading
+                            ? SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    Theme.of(context).colorScheme.primary,
+                                  ),
+                                ),
+                              )
+                            : Icon(Icons.refresh, size: 20, color: Theme.of(context).iconTheme.color),
+                        const SizedBox(width: 12),
+                        Text(AppLocalizations.of(context)!.reload),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
           ],
         ),
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Theme.of(context).colorScheme.onPrimary,
-        actions: [
-          if (!isLoading && fileContent != null) ...[
-            IconButton(
-              onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: fileContent!));
-                if (mounted) {
-                  final notificationProvider = Provider.of<NotificationProvider>(context, listen: false);
-                  notificationProvider.showInfo('Content copied to clipboard');
-                }
-              },
-              icon: const Icon(Icons.copy),
-              tooltip: 'Copy to Clipboard',
-            ),
-            IconButton(
-              onPressed: isDownloading ? null : _downloadFile,
-              icon: isDownloading
-                  ? SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        value: downloadProgress > 0 ? downloadProgress : null,
-                      ),
-                    )
-                  : const Icon(Icons.download),
-              tooltip: 'Download File',
-            ),
-          ],
-          // Transmit button for .sub files
-          if (_isTransmittableFile())
-            IconButton(
-              onPressed: isLoading ? null : _transmitSignal,
-              icon: const Icon(Icons.send),
-              tooltip: 'Transmit Signal',
-            ),
-          IconButton(
-            onPressed: _loadFileContent,
-            icon: isLoading
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.refresh),
-            tooltip: 'Reload',
-          ),
-        ],
         bottom: isDownloading
             ? PreferredSize(
                 preferredSize: const Size.fromHeight(4),
@@ -781,18 +814,53 @@ class _FileViewerScreenState extends State<FileViewerScreen>
                 ),
               )
             : !isLoading && fileContent != null
-                ? TabBar(
-                controller: _tabController,
-                indicatorColor: Theme.of(context).colorScheme.onPrimary,
-                labelColor: Theme.of(context).colorScheme.onPrimary,
-                unselectedLabelColor: Theme.of(context).colorScheme.onPrimary.withOpacity(0.7),
-                tabs: hasParser ? [
-                  Tab(text: 'Parsed', icon: Icon(Icons.analytics, size: 18)),
-                  Tab(text: 'Raw', icon: Icon(Icons.code, size: 18)),
-                ] : [
-                  Tab(text: 'Raw', icon: Icon(Icons.code, size: 18)),
-                ],
-                  )
+                ? PreferredSize(
+                preferredSize: const Size.fromHeight(40),
+                child: TabBar(
+                  controller: _tabController,
+                  indicatorColor: Theme.of(context).colorScheme.onPrimary,
+                  labelColor: Theme.of(context).colorScheme.onPrimary,
+                  unselectedLabelColor: Theme.of(context).colorScheme.onPrimary.withOpacity(0.7),
+                  labelStyle: const TextStyle(fontSize: 13),
+                  labelPadding: const EdgeInsets.symmetric(horizontal: 8),
+                  tabs: hasParser ? [
+                    Tab(
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.analytics, size: 16),
+                          SizedBox(width: 6),
+                          Text(AppLocalizations.of(context)!.parsed),
+                        ],
+                      ),
+                    ),
+                    Tab(
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.code, size: 16),
+                          SizedBox(width: 6),
+                          Text(AppLocalizations.of(context)!.raw),
+                        ],
+                      ),
+                    ),
+                  ] : [
+                    Tab(
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.code, size: 16),
+                          SizedBox(width: 6),
+                          Text(AppLocalizations.of(context)!.raw),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              )
                 : null,
       ),
       body: Consumer<BleProvider>(
@@ -805,7 +873,7 @@ class _FileViewerScreenState extends State<FileViewerScreen>
                 children: [
                   const CircularProgressIndicator(),
                   const SizedBox(height: 16),
-                  const Text('Loading file...'),
+                  Text(AppLocalizations.of(context)!.loadingFile),
                   const SizedBox(height: 8),
                   if (bleProvider.fileContentProgress > 0)
                     Text(
@@ -825,27 +893,27 @@ class _FileViewerScreenState extends State<FileViewerScreen>
           }
           
           if (!bleProvider.isConnected) {
-            return const Center(
+            return Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(
                     Icons.bluetooth_disabled,
                     size: 64,
-                    color: Colors.grey,
+                    color: AppColors.secondaryText,
                   ),
                   SizedBox(height: 16),
                   Text(
-                    'Not connected to device',
+                    AppLocalizations.of(context)!.notConnectedToDeviceFile,
                     style: TextStyle(
                       fontSize: 18,
-                      color: Colors.grey,
+                      color: AppColors.secondaryText,
                     ),
                   ),
                   Text(
-                    'Connect to a device to view files',
+                    AppLocalizations.of(context)!.connectToDeviceToViewFiles,
                     style: TextStyle(
-                      color: Colors.grey,
+                      color: AppColors.secondaryText,
                     ),
                   ),
                 ],

@@ -30,7 +30,8 @@ import 'dart:io';
 /// 0x0B - remove (pathLength:1, path:variable)
 /// 0x0C - rename (fromLength:1, fromPath:variable, toLength:1, toPath:variable)
 /// 0x0D - upload (file upload with chunking)
-/// 0x12 - getDirectoryTree (pathType:1)
+/// 0x12 - startJam (jamming command)
+/// 0x14 - getDirectoryTree (pathType:1)
 /// 
 /// Special Message Types:
 /// 0xFE - Chunk Data (for large responses)
@@ -39,7 +40,7 @@ class FirmwareBinaryProtocol {
   // Protocol constants (matching firmware)
   static const int MAGIC_BYTE = 0xAA;
   static const int PACKET_HEADER_SIZE = 7; // magic + type + chunk_id + chunk_num + total_chunks + data_len(2 bytes)
-  static const int MAX_CHUNK_SIZE = 500; // Optimized for Bluetooth 5.0 MTU 512 (dataLen is now 2 bytes)
+  static const int MAX_CHUNK_SIZE = 500; // Safe maximum: BLE notify limit is 509 bytes, so 509 - 7 (header) - 1 (checksum) - 1 (safety) = 500
   
   // Packet types (matching firmware)
   static const int PACKET_TYPE_DATA = 0x01;
@@ -60,9 +61,12 @@ class FirmwareBinaryProtocol {
   static const int MSG_RENAME_FILE = 0x0C;
   static const int MSG_UPLOAD_FILE = 0x0D;
   static const int MSG_COPY_FILE = 0x0E;
+  static const int MSG_MOVE_FILE = 0x0F;
   static const int MSG_SAVE_TO_SIGNALS_WITH_NAME = 0x10;
   static const int MSG_FREQUENCY_SEARCH = 0x11;
-  static const int MSG_GET_DIRECTORY_TREE = 0x12;
+  static const int MSG_START_JAM = 0x12;
+  static const int MSG_GET_DIRECTORY_TREE = 0x14; // Moved to 0x14 to avoid conflict
+  static const int MSG_SET_TIME = 0x13;
 
   /// Calculate CRC32 checksum
   static int calculateCRC32(Uint8List data) {
@@ -231,13 +235,21 @@ class FirmwareBinaryProtocol {
   }
 
   /// Create transmitFromFile command with path type
-  static Uint8List createTransmitFromFileCommand(String path, {int pathType = 0}) {
+  /// [module] - optional module number (-1 means auto-select first idle module)
+  static Uint8List createTransmitFromFileCommand(String path, {int pathType = 0, int? module}) {
     List<int> pathBytes = utf8.encode(path);
-    Uint8List payload = Uint8List(2 + pathBytes.length);
+    int payloadLength = 2 + pathBytes.length;
+    if (module != null && module >= 0) {
+      payloadLength += 1; // Add module byte if specified
+    }
+    Uint8List payload = Uint8List(payloadLength);
     payload[0] = pathBytes.length;
     payload[1] = pathType;  // 0=/DATA/RECORDS, 1=/DATA/SIGNALS, etc.
     for (int i = 0; i < pathBytes.length; i++) {
       payload[2 + i] = pathBytes[i];
+    }
+    if (module != null && module >= 0) {
+      payload[2 + pathBytes.length] = module;
     }
     return _createEnhancedCommand(MSG_TRANSMIT_FROM_FILE, payload);
   }
@@ -314,6 +326,27 @@ class FirmwareBinaryProtocol {
     }
     
     return _createEnhancedCommand(MSG_COPY_FILE, payload);
+  }
+
+  /// Create moveFile command with separate path types for source and destination
+  /// Format: [sourcePathType:1][destPathType:1][sourcePathLength:1][sourcePath:variable][destPathLength:1][destPath:variable]
+  static Uint8List createMoveFileCommand(String sourcePath, String destPath, {int sourcePathType = 0, int destPathType = 0}) {
+    List<int> sourceBytes = utf8.encode(sourcePath);
+    List<int> destBytes = utf8.encode(destPath);
+    Uint8List payload = Uint8List(4 + sourceBytes.length + destBytes.length);
+    
+    payload[0] = sourcePathType;
+    payload[1] = destPathType;
+    payload[2] = sourceBytes.length;
+    for (int i = 0; i < sourceBytes.length; i++) {
+      payload[3 + i] = sourceBytes[i];
+    }
+    payload[3 + sourceBytes.length] = destBytes.length;
+    for (int i = 0; i < destBytes.length; i++) {
+      payload[4 + sourceBytes.length + i] = destBytes[i];
+    }
+    
+    return _createEnhancedCommand(MSG_MOVE_FILE, payload);
   }
 
   /// Create upload file command (first chunk with path)
@@ -551,10 +584,12 @@ class FirmwareBinaryProtocol {
   }
 
   /// Create save to signals with custom name command
-  static Uint8List createSaveToSignalsWithNameCommand(String sourcePath, String targetName, {int pathType = 0}) {
+  static Uint8List createSaveToSignalsWithNameCommand(String sourcePath, String targetName, {int pathType = 0, DateTime? preserveDate}) {
     List<int> sourcePathBytes = utf8.encode(sourcePath);
     List<int> targetNameBytes = utf8.encode(targetName);
-    Uint8List payload = Uint8List(3 + sourcePathBytes.length + targetNameBytes.length);
+    // Добавляем 4 байта для даты (Unix timestamp), если она указана
+    int dateBytes = preserveDate != null ? 4 : 0;
+    Uint8List payload = Uint8List(3 + sourcePathBytes.length + targetNameBytes.length + dateBytes);
     
     payload[0] = sourcePathBytes.length;
     payload[1] = targetNameBytes.length;
@@ -570,6 +605,16 @@ class FirmwareBinaryProtocol {
       payload[3 + sourcePathBytes.length + i] = targetNameBytes[i];
     }
     
+    // Add date if provided (Unix timestamp in seconds, 4 bytes little-endian)
+    if (preserveDate != null) {
+      final timestamp = preserveDate.millisecondsSinceEpoch ~/ 1000; // Convert to seconds
+      final offset = 3 + sourcePathBytes.length + targetNameBytes.length;
+      payload[offset] = timestamp & 0xFF;
+      payload[offset + 1] = (timestamp >> 8) & 0xFF;
+      payload[offset + 2] = (timestamp >> 16) & 0xFF;
+      payload[offset + 3] = (timestamp >> 24) & 0xFF;
+    }
+    
     return _createEnhancedCommand(MSG_SAVE_TO_SIGNALS_WITH_NAME, payload);
   }
 
@@ -581,5 +626,77 @@ class FirmwareBinaryProtocol {
     payload[2] = isBackground ? 1 : 0; // Background scanner flag
     
     return _createEnhancedCommand(MSG_FREQUENCY_SEARCH, payload);
+  }
+
+  /// Create set time command (Unix timestamp in seconds, 4 bytes little-endian)
+  static Uint8List createSetTimeCommand(DateTime dateTime) {
+    final timestamp = dateTime.millisecondsSinceEpoch ~/ 1000; // Convert to seconds
+    Uint8List payload = Uint8List(4);
+    payload[0] = timestamp & 0xFF;
+    payload[1] = (timestamp >> 8) & 0xFF;
+    payload[2] = (timestamp >> 16) & 0xFF;
+    payload[3] = (timestamp >> 24) & 0xFF;
+    
+    return _createEnhancedCommand(MSG_SET_TIME, payload);
+  }
+
+  /// Create start jam command
+  /// Format: module(1) + frequency(4) + modulation(1) + deviation(4) + power(1) + patternType(1) + maxDurationMs(4) + cooldownMs(4) + [customPatternLen(1) + customPattern]
+  /// Create startJam command
+  /// Format: module(1) + frequency(4) + power(1) + patternType(1) + maxDurationMs(4) + cooldownMs(4) + [customPatternLen(1) + customPattern]
+  static Uint8List createStartJamCommand({
+    required int module,
+    required double frequency,
+    int power = 7, // 0-7
+    int patternType = 0, // 0=Random, 1=Alternating, 2=Continuous, 3=Custom
+    int maxDurationMs = 60000, // 60 seconds default
+    int cooldownMs = 5000, // 5 seconds default
+    List<int>? customPattern, // Optional custom pattern bytes
+  }) {
+    int baseSize = 15; // module(1) + frequency(4) + power(1) + patternType(1) + maxDurationMs(4) + cooldownMs(4)
+    int customPatternSize = 0;
+    if (patternType == 3 && customPattern != null) {
+      customPatternSize = 1 + customPattern.length; // length byte + pattern bytes
+    }
+    
+    Uint8List payload = Uint8List(baseSize + customPatternSize);
+    int offset = 0;
+    
+    // module (1 byte)
+    payload[offset++] = module;
+    
+    // frequency (4 bytes, float, little-endian)
+    Uint8List freqBytes = _floatToBytes(frequency);
+    for (int i = 0; i < 4; i++) {
+      payload[offset++] = freqBytes[i];
+    }
+    
+    // power (1 byte, 0-7)
+    payload[offset++] = power.clamp(0, 7);
+    
+    // patternType (1 byte, 0-3)
+    payload[offset++] = patternType.clamp(0, 3);
+    
+    // maxDurationMs (4 bytes, uint32, little-endian)
+    payload[offset++] = maxDurationMs & 0xFF;
+    payload[offset++] = (maxDurationMs >> 8) & 0xFF;
+    payload[offset++] = (maxDurationMs >> 16) & 0xFF;
+    payload[offset++] = (maxDurationMs >> 24) & 0xFF;
+    
+    // cooldownMs (4 bytes, uint32, little-endian)
+    payload[offset++] = cooldownMs & 0xFF;
+    payload[offset++] = (cooldownMs >> 8) & 0xFF;
+    payload[offset++] = (cooldownMs >> 16) & 0xFF;
+    payload[offset++] = (cooldownMs >> 24) & 0xFF;
+    
+    // customPattern (optional)
+    if (patternType == 3 && customPattern != null) {
+      payload[offset++] = customPattern.length;
+      for (int i = 0; i < customPattern.length; i++) {
+        payload[offset++] = customPattern[i];
+      }
+    }
+    
+    return _createEnhancedCommand(MSG_START_JAM, payload);
   }
 }

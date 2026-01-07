@@ -16,16 +16,22 @@ enum BinaryMessageType : uint8_t {
     MSG_SIGNAL_DETECTED = 0x90,
     MSG_SIGNAL_RECORDED = 0x91,
     MSG_SIGNAL_SENT = 0x92,
-    MSG_FREQUENCY_SEARCH = 0x93,  // Frequency search command
+    MSG_SIGNAL_SEND_ERROR = 0x93,
+    MSG_FREQUENCY_SEARCH = 0x94,  // Frequency search command
     
     // File operations (RAW binary, NO JSON!)
     MSG_FILE_CONTENT = 0xA0,     // Raw file content chunks
-    MSG_FILE_LIST = 0xA1,        // File list (binary format: [0xA1][pathLen:1][path][jsonData...]) - streaming format, no jsonLength
+    MSG_FILE_LIST = 0xA1,        // File list STREAMING: [0xA1][pathLen][path][flags][totalFiles:2][fileCount][files...]
     MSG_DIRECTORY_TREE = 0xA2,   // Directory tree (nested structure, directories only)
+    MSG_FILE_ACTION_RESULT = 0xA3, // Result of file action (rename, delete, etc.)
     
     // Errors
     MSG_ERROR = 0xF0,
     MSG_LOW_MEMORY = 0xF1,
+    
+    // Command results (generic)
+    MSG_COMMAND_SUCCESS = 0xF2,  // Generic success
+    MSG_COMMAND_ERROR = 0xF3,    // Generic error
 };
 
 // Mode switch notification (4 bytes)
@@ -72,11 +78,39 @@ struct BinarySignalRecorded {
     // char filename[]; // Variable length follows
 };
 
+// Signal sent result
+struct BinarySignalSent {
+    uint8_t messageType = MSG_SIGNAL_SENT;
+    uint8_t module;
+    uint8_t filenameLength;
+    // char filename[];
+};
+
+// Signal send error
+struct BinarySignalSendError {
+    uint8_t messageType = MSG_SIGNAL_SEND_ERROR;
+    uint8_t module;
+    uint8_t errorCode;
+    uint8_t filenameLength;
+    // char filename[];
+};
+
 // Error message (2 bytes + message)
 struct BinaryError {
     uint8_t messageType = MSG_ERROR;
     uint8_t errorCode;
     // char message[]; // Variable length follows
+};
+
+// File action result (variable length)
+// [type][action:1][status:1][errorCode:1][pathLen:1][path...]
+struct BinaryFileActionResult {
+    uint8_t messageType = MSG_FILE_ACTION_RESULT;
+    uint8_t action;         // 1=delete, 2=rename, 3=mkdir, 4=copy, 5=move
+    uint8_t status;         // 0=success, 1=error
+    uint8_t errorCode;      // Optional error code
+    uint8_t pathLen;
+    // char path[];        // Path or filename follows
 };
 
 #pragma pack(pop)

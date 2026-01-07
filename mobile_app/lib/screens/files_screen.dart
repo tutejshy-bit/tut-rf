@@ -1,14 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import '../l10n/app_localizations.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
+import 'dart:convert';
+import 'dart:typed_data';
 import '../providers/ble_provider.dart';
 import '../providers/notification_provider.dart';
 import '../providers/log_provider.dart';
 import '../widgets/file_list_widget.dart';
 import '../widgets/directory_picker_dialog.dart';
+import '../widgets/transmit_file_dialog.dart';
+import '../theme/app_colors.dart';
 import 'file_viewer_screen.dart';
 
 class FilesScreen extends StatefulWidget {
@@ -48,21 +53,21 @@ class _FilesScreenState extends State<FilesScreen> {
             Icon(
               Icons.bluetooth_disabled,
               size: 64,
-              color: Colors.grey,
+              color: AppColors.secondaryText,
             ),
                     const SizedBox(height: 16),
             Text(
-              'Not connected to device',
+              AppLocalizations.of(context)!.notConnectedToDevice,
               style: TextStyle(
                 fontSize: 18,
-                color: Colors.grey,
+                color: AppColors.secondaryText,
               ),
             ),
             Text(
-              'Connect to a device to manage files',
+              AppLocalizations.of(context)!.connectToDeviceToManageFiles,
               style: TextStyle(
                         fontSize: 14,
-                color: Colors.grey,
+                color: AppColors.secondaryText,
               ),
             ),
           ],
@@ -79,7 +84,7 @@ class _FilesScreenState extends State<FilesScreen> {
                 // Компактный заголовок с путём и dropdown
                 Container(
                   height: 48, // Compact height
-                  color: Theme.of(context).colorScheme.inversePrimary,
+                  color: AppColors.secondaryBackground,
                   padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
                   child: Row(
                     children: [
@@ -108,33 +113,50 @@ class _FilesScreenState extends State<FilesScreen> {
                           onPressed: () => bleProvider.resetFileLoadingState(),
                           icon: const Icon(Icons.stop),
                           iconSize: 20,
-                          tooltip: 'Stop Loading',
-                          color: Colors.red,
+                          tooltip: AppLocalizations.of(context)!.stopLoading,
+                          color: AppColors.error,
                         )
                       else
                         IconButton(
                           onPressed: () => bleProvider.refreshFileList(forceRefresh: true),
                           icon: const Icon(Icons.refresh),
                           iconSize: 20,
-                          tooltip: 'Refresh',
+                          tooltip: AppLocalizations.of(context)!.refresh,
                         ),
                       IconButton(
                         onPressed: () => _showCreateDirectoryDialog(context, bleProvider),
                         icon: const Icon(Icons.create_new_folder),
                         iconSize: 20,
-                        tooltip: 'Create Directory',
+                        tooltip: AppLocalizations.of(context)!.createDirectory,
                       ),
                       IconButton(
                         onPressed: () => _uploadFileFromDevice(context, bleProvider),
                         icon: const Icon(Icons.upload_file),
                         iconSize: 20,
-                        tooltip: 'Upload File',
+                        tooltip: AppLocalizations.of(context)!.uploadFile,
                       ),
                       IconButton(
                         onPressed: () => _toggleMultiSelectMode(),
                         icon: Icon(_isMultiSelectMode ? Icons.checklist : Icons.checklist_outlined),
                         iconSize: 20,
-                        tooltip: _isMultiSelectMode ? 'Exit Multi-Select' : 'Multi-Select',
+                        tooltip: _isMultiSelectMode ? AppLocalizations.of(context)!.exitMultiSelect : AppLocalizations.of(context)!.multiSelect,
+                      ),
+                    ],
+                  ),
+                ),
+                // Полоска с количеством файлов
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
+                  color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        _buildFileCountText(bleProvider),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          fontSize: 11,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
                       ),
                     ],
                   ),
@@ -170,6 +192,26 @@ class _FilesScreenState extends State<FilesScreen> {
     );
   }
 
+  String _buildFileCountText(BleProvider bleProvider) {
+    final l10n = AppLocalizations.of(context)!;
+    
+    // При загрузке показываем "?" вместо предыдущего значения
+    if (bleProvider.isLoadingFiles) {
+      return l10n.loadingFiles;
+    }
+    
+    final loadedCount = bleProvider.fileList.length;
+    final totalCount = bleProvider.totalFilesInDirectory;
+    
+    if (totalCount > 0) {
+      return l10n.filesLoadedCount(loadedCount, totalCount);
+    } else if (loadedCount > 0) {
+      return l10n.filesInDirectory(loadedCount);
+    } else {
+      return l10n.noFiles;
+    }
+  }
+
   void _handleFileSelection(BuildContext context, dynamic file, BleProvider bleProvider) {
     if (_isMultiSelectMode && !file.isDirectory) {
       // Toggle selection in multi-select mode
@@ -191,8 +233,9 @@ class _FilesScreenState extends State<FilesScreen> {
           builder: (context) => FileViewerScreen(
             fileItem: file,
             filePath: fullPath,
+            pathType: bleProvider.currentPathType,
           ),
-                  ),
+        ),
       );
     }
   }
@@ -226,39 +269,15 @@ class _FilesScreenState extends State<FilesScreen> {
   }
 
   void _transmitFile(BuildContext context, dynamic file, BleProvider bleProvider) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Transmit Signal'),
-        content: Text('Do you want to transmit signal from file "${file.name}"?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Transmit'),
-          ),
-        ],
-      ),
+    // Передаем полный путь к файлу
+    final fullPath = bleProvider.currentPath == '/' ? file.name : '${bleProvider.currentPath}/${file.name}';
+    
+    await TransmitFileDialog.showAndTransmit(
+      context,
+      fileName: file.name,
+      filePath: fullPath,
+      pathType: bleProvider.currentPathType,
     );
-
-    if (confirmed != true) return;
-
-    try {
-      // Передаем полный путь к файлу
-      final fullPath = bleProvider.currentPath == '/' ? file.name : '${bleProvider.currentPath}/${file.name}';
-      await bleProvider.transmitFromFile(fullPath);
-
-      if (context.mounted) {
-        _showSuccessSnackBar('Signal transmission started: ${file.name}');
-      }
-    } catch (e) {
-      if (context.mounted) {
-        _showErrorSnackBar('Transmission failed: $e');
-      }
-    }
   }
 
   void _downloadFile(BuildContext context, dynamic file, BleProvider bleProvider) async {
@@ -278,82 +297,96 @@ class _FilesScreenState extends State<FilesScreen> {
         // Сохраняем файл на устройство
         await _saveFileToDevice(context, content, file.name);
       } else if (context.mounted) {
-        _showErrorSnackBar('Download failed: No content received');
+        final l10n = AppLocalizations.of(context)!;
+        _showErrorSnackBar(l10n.downloadFailedNoContent);
       }
     } catch (e) {
       if (context.mounted) {
-        _showErrorSnackBar('Download failed: $e');
+        final l10n = AppLocalizations.of(context)!;
+        _showErrorSnackBar(l10n.downloadFailed(e.toString()));
       }
     }
   }
 
   Future<void> _saveFileToDevice(BuildContext context, String content, String fileName) async {
     try {
-      // Сначала пытаемся сохранить в Downloads
-      Directory? downloadsDir;
-      try {
-        // Для Android используем getExternalStorageDirectory + /Download
-        // Для iOS используем getApplicationDocumentsDirectory
-        if (Platform.isAndroid) {
-          final externalDir = await getExternalStorageDirectory();
-          if (externalDir != null) {
-            // Получаем родительскую директорию (обычно /storage/emulated/0)
-            final parentDir = externalDir.parent;
-            downloadsDir = Directory('${parentDir.path}/Download');
-            // Создаем директорию если не существует
-            if (!await downloadsDir.exists()) {
-              await downloadsDir.create(recursive: true);
-            }
+      // Конвертируем строку в байты для сохранения
+      final bytes = Uint8List.fromList(utf8.encode(content));
+      print('_saveFileToDevice: Starting save process for file: $fileName, size: ${bytes.length} bytes');
+      
+      // На Android и iOS FilePicker.saveFile требует передачи байтов
+      final l10n = AppLocalizations.of(context)!;
+      String? outputFile = await FilePicker.platform.saveFile(
+        dialogTitle: l10n.saveFileAs,
+        fileName: fileName,
+        bytes: bytes, // Передаем байты для Android/iOS
+        allowedExtensions: null,
+      );
+      
+      if (outputFile != null && outputFile.isNotEmpty) {
+        print('_saveFileToDevice: File saved successfully to: $outputFile');
+        
+        // Проверяем, что файл действительно существует
+        final file = File(outputFile);
+        if (await file.exists()) {
+          final fileSize = await file.length();
+          print('_saveFileToDevice: File verified, size: $fileSize bytes');
+          
+          if (context.mounted) {
+            final l10n = AppLocalizations.of(context)!;
+            _showSuccessSnackBar(l10n.fileSaved(outputFile));
           }
         } else {
-          // Для iOS используем Documents
-          downloadsDir = await getApplicationDocumentsDirectory();
-        }
-      } catch (e) {
-        // Fallback на Documents если не удалось получить Downloads
-        downloadsDir = await getApplicationDocumentsDirectory();
-      }
-      
-      if (downloadsDir != null) {
-        final file = File('${downloadsDir.path}/$fileName');
-        await file.writeAsString(content);
-        
-        if (context.mounted) {
-          _showSuccessSnackBar('File saved to Downloads: $fileName');
+          // На некоторых платформах FilePicker сам сохраняет файл, проверяем через небольшую задержку
+          await Future.delayed(const Duration(milliseconds: 100));
+          if (await file.exists()) {
+            if (context.mounted) {
+              final l10n = AppLocalizations.of(context)!;
+              _showSuccessSnackBar(l10n.fileSaved(outputFile));
+            }
+          } else {
+            throw Exception('File was not created at path: $outputFile');
+          }
         }
       } else {
-        throw Exception('Could not determine download directory');
+        print('_saveFileToDevice: User cancelled save dialog, copying to clipboard');
+        // Если пользователь отменил, копируем в буфер обмена
+        await Clipboard.setData(ClipboardData(text: content));
+        
+        if (context.mounted) {
+          final l10n = AppLocalizations.of(context)!;
+          _showInfoSnackBar(l10n.fileContentCopiedToClipboard);
+        }
       }
     } catch (e) {
-      // В случае ошибки пытаемся через FilePicker
+      print('_saveFileToDevice: Error during save: $e');
+      // В случае ошибки пытаемся сохранить в Documents как fallback
       try {
-        String? outputFile = await FilePicker.platform.saveFile(
-          dialogTitle: 'Save file as...',
-          fileName: fileName,
-          allowedExtensions: null,
-        );
+        print('_saveFileToDevice: Trying fallback to Documents directory');
+        final directory = await getApplicationDocumentsDirectory();
+        final file = File('${directory.path}/$fileName');
+        await file.writeAsString(content);
         
-        if (outputFile != null) {
-          final file = File(outputFile);
-          await file.writeAsString(content);
+        // Проверяем, что файл действительно сохранен
+        if (await file.exists()) {
+          final fileSize = await file.length();
+          print('_saveFileToDevice: File saved to Documents, size: $fileSize bytes');
           
           if (context.mounted) {
-            _showSuccessSnackBar('File saved to: ${file.path}');
+            final l10n = AppLocalizations.of(context)!;
+            _showSuccessSnackBar(l10n.fileSavedToDocuments(file.path));
           }
         } else {
-          // Если пользователь отменил, копируем в буфер обмена
-          await Clipboard.setData(ClipboardData(text: content));
-          
-          if (context.mounted) {
-            _showInfoSnackBar('File content copied to clipboard');
-          }
+          throw Exception('File was written but does not exist');
         }
       } catch (e2) {
+        print('_saveFileToDevice: Fallback also failed: $e2');
         // Последняя попытка - копируем в буфер обмена
         await Clipboard.setData(ClipboardData(text: content));
         
         if (context.mounted) {
-          _showInfoSnackBar('File content copied to clipboard');
+          final l10n = AppLocalizations.of(context)!;
+          _showErrorSnackBar(l10n.couldNotSaveFile(e.toString()));
         }
       }
     }
@@ -361,9 +394,10 @@ class _FilesScreenState extends State<FilesScreen> {
 
   void _copyFile(BuildContext context, dynamic file, BleProvider bleProvider) async {
     // First select destination directory
+    final l10n = AppLocalizations.of(context)!;
     final directoryResult = await showDirectoryPickerDialog(
       context,
-      'Copy File',
+      l10n.copyFile,
       bleProvider,
     );
 
@@ -374,21 +408,28 @@ class _FilesScreenState extends State<FilesScreen> {
     // Then get new file name
     final newName = await showDialog<String>(
       context: context,
-      builder: (context) {
+      builder: (dialogContext) {
+        final l10n = AppLocalizations.of(dialogContext)!;
         final controller = TextEditingController(text: file.name);
         return AlertDialog(
-          title: const Text('Copy File'),
+          title: Text(
+            l10n.copyFile,
+            style: const TextStyle(color: AppColors.primaryText),
+          ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Destination: $destinationPath'),
+              Text(
+                l10n.destination(destinationPath),
+                style: const TextStyle(color: AppColors.primaryText),
+              ),
               const SizedBox(height: 16),
               TextField(
                 controller: controller,
-                decoration: const InputDecoration(
-                  labelText: 'New file name',
-                  border: OutlineInputBorder(),
+                decoration: InputDecoration(
+                  labelText: l10n.newFileName,
+                  border: const OutlineInputBorder(),
                 ),
                 autofocus: true,
               ),
@@ -396,12 +437,12 @@ class _FilesScreenState extends State<FilesScreen> {
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: Text(l10n.cancel),
             ),
             TextButton(
-              onPressed: () => Navigator.of(context).pop(controller.text),
-              child: const Text('Copy'),
+              onPressed: () => Navigator.of(dialogContext).pop(controller.text),
+              child: Text(l10n.copy),
             ),
           ],
         );
@@ -433,12 +474,14 @@ class _FilesScreenState extends State<FilesScreen> {
         
         await bleProvider.copyFile(fullPath, destPath);
         if (context.mounted) {
-          _showSuccessSnackBar('File copied: $newName');
+          final l10n = AppLocalizations.of(context)!;
+          _showSuccessSnackBar(l10n.fileCopied(newName));
           // refreshFileList is already called in copyFile if needed
         }
       } catch (e) {
         if (context.mounted) {
-          _showErrorSnackBar('Copy failed: $e');
+          final l10n = AppLocalizations.of(context)!;
+          _showErrorSnackBar(l10n.copyFailed(e.toString()));
         }
       }
     }
@@ -447,25 +490,29 @@ class _FilesScreenState extends State<FilesScreen> {
   void _renameFile(BuildContext context, dynamic file, BleProvider bleProvider) async {
     final newName = await showDialog<String>(
       context: context,
-      builder: (context) {
+      builder: (dialogContext) {
+        final l10n = AppLocalizations.of(dialogContext)!;
         final controller = TextEditingController(text: file.name);
         return AlertDialog(
-          title: Text(file.isDirectory ? 'Rename Directory' : 'Rename File'),
+          title: Text(
+            file.isDirectory ? l10n.renameDirectory : l10n.renameFile,
+            style: const TextStyle(color: AppColors.primaryText),
+          ),
           content: TextField(
             controller: controller,
             decoration: InputDecoration(
-              labelText: file.isDirectory ? 'New directory name' : 'New file name',
+              labelText: file.isDirectory ? l10n.newDirectoryName : l10n.newFileName,
               border: const OutlineInputBorder(),
             ),
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: Text(l10n.cancel),
             ),
             TextButton(
-              onPressed: () => Navigator.of(context).pop(controller.text),
-              child: const Text('Rename'),
+              onPressed: () => Navigator.of(dialogContext).pop(controller.text),
+              child: Text(l10n.rename),
             ),
           ],
         );
@@ -504,14 +551,17 @@ class _FilesScreenState extends State<FilesScreen> {
               }
             }
             
-            _showSuccessSnackBar('${file.isDirectory ? 'Directory' : 'File'} renamed to: $newName');
+            final l10n = AppLocalizations.of(context)!;
+            _showSuccessSnackBar(file.isDirectory ? l10n.directoryRenamed(newName) : l10n.fileRenamed(newName));
           } else {
-            _showErrorSnackBar('Rename failed: ${file.isDirectory ? 'Directory' : 'File'} could not be renamed');
+            final l10n = AppLocalizations.of(context)!;
+            _showErrorSnackBar(l10n.renameFailed(file.isDirectory ? 'Directory' : 'File'));
           }
         }
       } catch (e) {
         if (context.mounted) {
-          _showErrorSnackBar('Rename failed: $e');
+          final l10n = AppLocalizations.of(context)!;
+          _showErrorSnackBar(l10n.renameFailed(e.toString()));
         }
       }
     }
@@ -520,21 +570,30 @@ class _FilesScreenState extends State<FilesScreen> {
   void _deleteFile(BuildContext context, dynamic file, BleProvider bleProvider) async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(file.isDirectory ? 'Delete Directory' : 'Delete File'),
-        content: Text('Are you sure you want to delete "${file.name}"?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
+      builder: (dialogContext) {
+        final l10n = AppLocalizations.of(dialogContext)!;
+        return AlertDialog(
+          title: Text(
+            file.isDirectory ? l10n.deleteDirectory : l10n.deleteFile,
+            style: const TextStyle(color: AppColors.primaryText),
           ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Delete'),
+          content: Text(
+            l10n.deleteConfirm(file.name),
+            style: const TextStyle(color: AppColors.primaryText),
           ),
-        ],
-        ),
-      );
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: Text(l10n.cancel),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: Text(l10n.delete),
+            ),
+          ],
+        );
+      },
+    );
 
     if (confirmed == true) {
       try {
@@ -548,21 +607,24 @@ class _FilesScreenState extends State<FilesScreen> {
         
         await bleProvider.deleteFile(fullPath);
         if (context.mounted) {
-          _showSuccessSnackBar('${file.isDirectory ? 'Directory' : 'File'} deleted: ${file.name}');
+          final l10n = AppLocalizations.of(context)!;
+          _showSuccessSnackBar(file.isDirectory ? l10n.directoryDeleted(file.name) : l10n.fileDeleted(file.name));
           await bleProvider.refreshFileList(forceRefresh: true);
         }
       } catch (e) {
         if (context.mounted) {
-          _showErrorSnackBar('Delete failed: $e');
+          final l10n = AppLocalizations.of(context)!;
+          _showErrorSnackBar(l10n.deleteFailed(e.toString()));
         }
       }
     }
   }
 
   void _moveFile(BuildContext context, dynamic file, BleProvider bleProvider) async {
+    final l10n = AppLocalizations.of(context)!;
     final result = await showDirectoryPickerDialog(
       context,
-      file.isDirectory ? 'Move Directory' : 'Move File',
+      file.isDirectory ? l10n.moveDirectory : l10n.moveFile,
       bleProvider,
     );
 
@@ -586,19 +648,26 @@ class _FilesScreenState extends State<FilesScreen> {
         }
         destPath = '$destPath${file.name}';
         
-        // Move file requires same pathType, so we use current pathType
-        final success = await bleProvider.moveFile(sourcePath, destPath);
+        // Use current pathType for source, pathType from dialog for destination
+        final success = await bleProvider.moveFile(
+          sourcePath, 
+          destPath, 
+          sourcePathType: bleProvider.currentPathType,
+          destPathType: pathType,
+        );
         if (context.mounted) {
+          final l10n = AppLocalizations.of(context)!;
           if (success) {
-            _showSuccessSnackBar('${file.isDirectory ? 'Directory' : 'File'} moved: ${file.name}');
+            _showSuccessSnackBar(file.isDirectory ? l10n.directoryMoved(file.name) : l10n.fileMoved(file.name));
             await bleProvider.refreshFileList(forceRefresh: true);
           } else {
-            _showErrorSnackBar('Move failed: ${file.name}');
+            _showErrorSnackBar(l10n.moveFailed(file.name));
           }
         }
       } catch (e) {
         if (context.mounted) {
-          _showErrorSnackBar('Move failed: $e');
+          final l10n = AppLocalizations.of(context)!;
+          _showErrorSnackBar(l10n.moveFailed(e.toString()));
         }
       }
     }
@@ -608,20 +677,29 @@ class _FilesScreenState extends State<FilesScreen> {
     if (action == 'delete') {
       final confirmed = await showDialog<bool>(
         context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Delete Files'),
-          content: Text('Are you sure you want to delete ${files.length} files?'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancel'),
+        builder: (dialogContext) {
+          final l10n = AppLocalizations.of(dialogContext)!;
+          return AlertDialog(
+            title: Text(
+              l10n.deleteFiles,
+              style: const TextStyle(color: AppColors.primaryText),
             ),
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Delete'),
+            content: Text(
+              l10n.deleteFilesConfirm(files.length),
+              style: const TextStyle(color: AppColors.primaryText),
             ),
-          ],
-        ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: Text(l10n.cancel),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: Text(l10n.delete),
+              ),
+            ],
+          );
+        },
       );
 
       if (confirmed == true) {
@@ -630,7 +708,14 @@ class _FilesScreenState extends State<FilesScreen> {
         
         for (final file in files) {
           try {
-            await bleProvider.deleteFile(file.name);
+            // Build full path including current directory
+            String fullPath;
+            if (bleProvider.currentPath == '/' || bleProvider.currentPath.isEmpty) {
+              fullPath = file.name;
+            } else {
+              fullPath = '${bleProvider.currentPath}/${file.name}';
+            }
+            await bleProvider.deleteFile(fullPath);
             successCount++;
           } catch (e) {
             failCount++;
@@ -642,7 +727,9 @@ class _FilesScreenState extends State<FilesScreen> {
         await bleProvider.refreshFileList(forceRefresh: true);
         
         if (context.mounted) {
-          _showSuccessSnackBar('Deleted $successCount files${failCount > 0 ? ', $failCount failed' : ''}');
+          final l10n = AppLocalizations.of(context)!;
+          final extra = failCount > 0 ? ', $failCount ${l10n.failed}' : '';
+          _showSuccessSnackBar(l10n.deletedFilesCount(successCount, extra));
           
           // Сбрасываем выделение только после успешного завершения удаления
           setState(() {
@@ -667,7 +754,7 @@ class _FilesScreenState extends State<FilesScreen> {
       child: Row(
         children: [
           Text(
-            '${_selectedFiles.length} selected',
+            AppLocalizations.of(context)!.selectedCount(_selectedFiles.length),
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               fontWeight: FontWeight.w500,
             ),
@@ -680,7 +767,7 @@ class _FilesScreenState extends State<FilesScreen> {
               });
             },
             icon: const Icon(Icons.clear),
-            tooltip: 'Clear Selection',
+            tooltip: AppLocalizations.of(context)!.clearSelection,
             iconSize: 20,
           ),
           IconButton(
@@ -689,7 +776,7 @@ class _FilesScreenState extends State<FilesScreen> {
               // НЕ сбрасываем выделение здесь - это будет сделано в _handleMultiSelectAction после успешного удаления
             },
             icon: const Icon(Icons.delete),
-            tooltip: 'Delete Selected',
+            tooltip: AppLocalizations.of(context)!.deleteSelected,
             iconSize: 20,
           ),
         ],
@@ -736,23 +823,24 @@ class _FilesScreenState extends State<FilesScreen> {
     notificationProvider.showInfo(message);
   }
 
-  String _getPathTypeName(int pathType) {
+  String _getPathTypeName(BuildContext context, int pathType) {
+    final l10n = AppLocalizations.of(context)!;
     switch (pathType) {
       case 0:
-        return 'Records';
+        return l10n.records;
       case 1:
-        return 'Signals';
+        return l10n.captured;
       case 2:
-        return 'Presets';
+        return l10n.presets;
       case 3:
-        return 'Temp';
+        return l10n.temp;
       default:
         return 'Unknown';
     }
   }
 
   Widget _buildPathWithDropdown(BuildContext context, BleProvider bleProvider) {
-    final pathTypeName = _getPathTypeName(bleProvider.currentPathType);
+    final pathTypeName = _getPathTypeName(context, bleProvider.currentPathType);
     final currentPath = bleProvider.currentPath;
     
     // Получаем путь без корневой директории
@@ -768,10 +856,10 @@ class _FilesScreenState extends State<FilesScreen> {
           icon: Text(
             pathTypeName,
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              color: Theme.of(context).colorScheme.onPrimary,
+              color: AppColors.primaryText,
               fontWeight: FontWeight.w500,
               decoration: TextDecoration.underline,
-              decorationColor: Theme.of(context).colorScheme.onPrimary.withOpacity(0.7),
+              decorationColor: AppColors.primaryText.withOpacity(0.7),
             ),
           ),
           onSelected: (int selectedType) {
@@ -779,70 +867,85 @@ class _FilesScreenState extends State<FilesScreen> {
               bleProvider.switchPathType(selectedType);
             }
           },
-          itemBuilder: (BuildContext context) => [
-            PopupMenuItem<int>(
-              value: 0,
-              child: Row(
-                children: [
-                  const Icon(Icons.folder, size: 20),
-                  const SizedBox(width: 8),
-                  const Text('Records'),
-                  if (bleProvider.currentPathType == 0)
-                    const Spacer(),
-                  if (bleProvider.currentPathType == 0)
-                    const Icon(Icons.check, size: 20),
-                ],
+          itemBuilder: (BuildContext menuContext) {
+            final l10n = AppLocalizations.of(menuContext)!;
+            return [
+              PopupMenuItem<int>(
+                value: 0,
+                child: Row(
+                  children: [
+                    const Icon(Icons.folder, size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      l10n.records,
+                      style: const TextStyle(color: AppColors.primaryText),
+                    ),
+                    if (bleProvider.currentPathType == 0)
+                      const Spacer(),
+                    if (bleProvider.currentPathType == 0)
+                      const Icon(Icons.check, size: 20, color: AppColors.primaryText),
+                  ],
+                ),
               ),
-            ),
-            PopupMenuItem<int>(
-              value: 1,
-              child: Row(
-                children: [
-                  const Icon(Icons.signal_cellular_alt, size: 20),
-                  const SizedBox(width: 8),
-                  const Text('Signals'),
-                  if (bleProvider.currentPathType == 1)
-                    const Spacer(),
-                  if (bleProvider.currentPathType == 1)
-                    const Icon(Icons.check, size: 20),
-                ],
+              PopupMenuItem<int>(
+                value: 1,
+                child: Row(
+                  children: [
+                    const Icon(Icons.signal_cellular_alt, size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      l10n.captured,
+                      style: const TextStyle(color: AppColors.primaryText),
+                    ),
+                    if (bleProvider.currentPathType == 1)
+                      const Spacer(),
+                    if (bleProvider.currentPathType == 1)
+                      const Icon(Icons.check, size: 20, color: AppColors.primaryText),
+                  ],
+                ),
               ),
-            ),
-            PopupMenuItem<int>(
-              value: 2,
-              child: Row(
-                children: [
-                  const Icon(Icons.settings, size: 20),
-                  const SizedBox(width: 8),
-                  const Text('Presets'),
-                  if (bleProvider.currentPathType == 2)
-                    const Spacer(),
-                  if (bleProvider.currentPathType == 2)
-                    const Icon(Icons.check, size: 20),
-                ],
+              PopupMenuItem<int>(
+                value: 2,
+                child: Row(
+                  children: [
+                    const Icon(Icons.settings, size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      l10n.presets,
+                      style: const TextStyle(color: AppColors.primaryText),
+                    ),
+                    if (bleProvider.currentPathType == 2)
+                      const Spacer(),
+                    if (bleProvider.currentPathType == 2)
+                      const Icon(Icons.check, size: 20, color: AppColors.primaryText),
+                  ],
+                ),
               ),
-            ),
-            PopupMenuItem<int>(
-              value: 3,
-              child: Row(
-                children: [
-                  const Icon(Icons.timer, size: 20),
-                  const SizedBox(width: 8),
-                  const Text('Temp'),
-                  if (bleProvider.currentPathType == 3)
-                    const Spacer(),
-                  if (bleProvider.currentPathType == 3)
-                    const Icon(Icons.check, size: 20),
-                ],
+              PopupMenuItem<int>(
+                value: 3,
+                child: Row(
+                  children: [
+                    const Icon(Icons.timer, size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      l10n.temp,
+                      style: const TextStyle(color: AppColors.primaryText),
+                    ),
+                    if (bleProvider.currentPathType == 3)
+                      const Spacer(),
+                    if (bleProvider.currentPathType == 3)
+                      const Icon(Icons.check, size: 20, color: AppColors.primaryText),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ];
+          },
         ),
         // Разделитель и путь
         Text(
           '/',
           style: Theme.of(context).textTheme.titleMedium?.copyWith(
-            color: Theme.of(context).colorScheme.onPrimary,
+            color: AppColors.primaryText,
             fontWeight: FontWeight.w500,
           ),
         ),
@@ -851,7 +954,7 @@ class _FilesScreenState extends State<FilesScreen> {
             child: Text(
               pathWithoutRoot,
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                color: Theme.of(context).colorScheme.onPrimary,
+                color: AppColors.primaryText,
                 fontWeight: FontWeight.w500,
               ),
               overflow: TextOverflow.ellipsis,
@@ -866,38 +969,44 @@ class _FilesScreenState extends State<FilesScreen> {
     
     final result = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Create Directory'),
-        content: TextField(
-          controller: nameController,
-          decoration: const InputDecoration(
-            labelText: 'Directory name',
-            border: OutlineInputBorder(),
-            hintText: 'Enter directory name',
+      builder: (dialogContext) {
+        final l10n = AppLocalizations.of(dialogContext)!;
+        return AlertDialog(
+          title: Text(
+            l10n.createDirectory,
+            style: const TextStyle(color: AppColors.primaryText),
           ),
-          autofocus: true,
-          onSubmitted: (value) {
-            if (value.trim().isNotEmpty) {
-              Navigator.of(context).pop(value.trim());
-            }
-          },
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              final name = nameController.text.trim();
-              if (name.isNotEmpty) {
-                Navigator.of(context).pop(name);
+          content: TextField(
+            controller: nameController,
+            decoration: InputDecoration(
+              labelText: l10n.directoryName,
+              border: const OutlineInputBorder(),
+              hintText: l10n.enterDirectoryName,
+            ),
+            autofocus: true,
+            onSubmitted: (value) {
+              if (value.trim().isNotEmpty) {
+                Navigator.of(dialogContext).pop(value.trim());
               }
             },
-            child: const Text('Create'),
           ),
-        ],
-      ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: Text(l10n.cancel),
+            ),
+            TextButton(
+              onPressed: () {
+                final name = nameController.text.trim();
+                if (name.isNotEmpty) {
+                  Navigator.of(dialogContext).pop(name);
+                }
+              },
+              child: Text(l10n.create),
+            ),
+          ],
+        );
+      },
     );
 
     if (result != null && result.isNotEmpty) {
@@ -913,13 +1022,15 @@ class _FilesScreenState extends State<FilesScreen> {
         await bleProvider.createDirectory(fullPath);
         
         if (context.mounted) {
-          _showSuccessSnackBar('Directory created: $result');
+          final l10n = AppLocalizations.of(context)!;
+          _showSuccessSnackBar(l10n.directoryCreated(result));
           // Обновляем список файлов
           await bleProvider.refreshFileList(forceRefresh: true);
         }
       } catch (e) {
         if (context.mounted) {
-          _showErrorSnackBar('Failed to create directory: $e');
+          final l10n = AppLocalizations.of(context)!;
+          _showErrorSnackBar(l10n.failedToCreateDirectory(e.toString()));
         }
       }
     }
@@ -937,23 +1048,25 @@ class _FilesScreenState extends State<FilesScreen> {
         
         if (!await file.exists()) {
           if (context.mounted) {
-            _showErrorSnackBar('Selected file does not exist');
+            final l10n = AppLocalizations.of(context)!;
+            _showErrorSnackBar(l10n.selectedFileDoesNotExist);
           }
           return;
         }
         
         if (context.mounted) {
           // Показываем диалог прогресса
+          final l10n = AppLocalizations.of(context)!;
           showDialog(
             context: context,
             barrierDismissible: false,
-            builder: (context) => AlertDialog(
+            builder: (dialogContext) => AlertDialog(
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   const CircularProgressIndicator(),
                   const SizedBox(height: 16),
-                  Text('Uploading $fileName...'),
+                  Text(l10n.uploadingFile(fileName)),
                 ],
               ),
             ),
@@ -965,6 +1078,8 @@ class _FilesScreenState extends State<FilesScreen> {
           final currentPath = bleProvider.currentPath;
           final pathType = bleProvider.currentPathType;
 
+          print('Upload: currentPath="$currentPath", pathType=$pathType, fileName="$fileName"');
+
           // Формируем полный путь для загрузки
           String targetPath = fileName;
           if (currentPath != '/' && currentPath.isNotEmpty) {
@@ -974,6 +1089,8 @@ class _FilesScreenState extends State<FilesScreen> {
                 : currentPath;
             targetPath = '$cleanPath/$fileName';
           }
+
+          print('Upload: targetPath="$targetPath"');
 
           // Загружаем файл
           final response = await bleProvider.uploadFile(
@@ -987,21 +1104,23 @@ class _FilesScreenState extends State<FilesScreen> {
 
           if (context.mounted) {
             Navigator.of(context).pop(); // Закрываем диалог прогресса
+            final l10n = AppLocalizations.of(context)!;
 
             if (response['success'] == true) {
-              _showSuccessSnackBar('File uploaded: $fileName');
+              _showSuccessSnackBar(l10n.fileUploaded(fileName));
               // Обновляем список файлов
               await bleProvider.refreshFileList(forceRefresh: true);
             } else {
-              final errorMsg = response['error'] ?? 'Upload failed';
-              _showErrorSnackBar('Upload failed: $errorMsg');
+              final errorMsg = response['error'] ?? l10n.uploadFailed('Unknown error');
+              _showErrorSnackBar(l10n.uploadFailed(errorMsg));
             }
           }
         } catch (e) {
           if (context.mounted) {
             Navigator.of(context).pop(); // Закрываем диалог прогресса
+            final l10n = AppLocalizations.of(context)!;
             
-            final errorMessage = 'Upload failed: $e';
+            final errorMessage = l10n.uploadFailed(e.toString());
             
             // Логируем в LogProvider для отображения на debug экране
             final logProvider = Provider.of<LogProvider>(context, listen: false);
@@ -1011,19 +1130,19 @@ class _FilesScreenState extends State<FilesScreen> {
             if (context.mounted) {
               showDialog(
                 context: context,
-                builder: (context) => AlertDialog(
-                  title: const Row(
+                builder: (dialogContext) => AlertDialog(
+                  title: Row(
                     children: [
-                      Icon(Icons.error_outline, color: Colors.red),
-                      SizedBox(width: 8),
-                      Text('Upload Error'),
+                      Icon(Icons.error_outline, color: AppColors.error),
+                      const SizedBox(width: 8),
+                      Text(l10n.uploadError),
                     ],
                   ),
                   content: Text(errorMessage),
                   actions: [
                     TextButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      child: const Text('OK'),
+                      onPressed: () => Navigator.of(dialogContext).pop(),
+                      child: Text(l10n.ok),
                     ),
                   ],
                 ),
@@ -1034,7 +1153,8 @@ class _FilesScreenState extends State<FilesScreen> {
       }
     } catch (e) {
       if (context.mounted) {
-        _showErrorSnackBar('Failed to pick file: $e');
+        final l10n = AppLocalizations.of(context)!;
+        _showErrorSnackBar(l10n.failedToPickFile(e.toString()));
       }
     }
   }

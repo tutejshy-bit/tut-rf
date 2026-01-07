@@ -58,8 +58,8 @@ class _DirectoryTreeWidgetState extends State<DirectoryTreeWidget> {
           child: Container(
             padding: EdgeInsets.only(
               left: level * 24.0 + 8.0,
-              top: 4.0,
-              bottom: 4.0,
+              top: 10.0,
+              bottom: 10.0,
               right: 8.0,
             ),
             decoration: BoxDecoration(
@@ -112,28 +112,14 @@ class _DirectoryTreeWidgetState extends State<DirectoryTreeWidget> {
 
   @override
   Widget build(BuildContext context) {
-    if (widget.directories.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Text(
-            'No directories found',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-            ),
-          ),
-        ),
-      );
-    }
-
     return ListView(
       shrinkWrap: true,
       children: [
-        // Root directory option
+        // Root directory option (always shown)
         InkWell(
           onTap: () => widget.onDirectorySelected('/'),
           child: Container(
-            padding: const EdgeInsets.all(8.0),
+            padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 12.0),
             decoration: BoxDecoration(
               color: widget.selectedPath == '/'
                   ? Theme.of(context).colorScheme.primary.withOpacity(0.1)
@@ -143,7 +129,7 @@ class _DirectoryTreeWidgetState extends State<DirectoryTreeWidget> {
             child: Row(
               children: [
                 Icon(
-                  Icons.folder,
+                  Icons.folder_special,
                   size: 20,
                   color: Theme.of(context).colorScheme.primary,
                 ),
@@ -158,9 +144,22 @@ class _DirectoryTreeWidgetState extends State<DirectoryTreeWidget> {
             ),
           ),
         ),
-        const Divider(height: 1),
-        // Directory tree
-        ...widget.directories.map((dir) => _buildDirectoryNode(dir, parentPath: '/')),
+        if (widget.directories.isNotEmpty) ...[
+          const Divider(height: 1),
+          // Directory tree
+          ...widget.directories.map((dir) => _buildDirectoryNode(dir, parentPath: '/')),
+        ] else ...[
+          // Show message when no subdirectories
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Text(
+              'No subdirectories',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../l10n/app_localizations.dart';
 import '../providers/ble_provider.dart';
 import '../providers/notification_provider.dart';
 import '../services/signal_processing/signal_data.dart';
@@ -7,7 +8,15 @@ import '../services/cc1101/cc1101_values.dart';
 import '../services/cc1101/cc1101_calculator.dart';
 import '../widgets/record_screen_widgets.dart';
 import '../widgets/file_list_widget.dart';
+import '../widgets/transmit_file_dialog.dart';
+import '../theme/app_colors.dart';
 import 'file_viewer_screen.dart';
+
+/// Тип действия с модулем
+enum ModuleAction {
+  recording,
+  jamming,
+}
 
 /// Экран записи сигналов
 /// Позволяет настраивать параметры CC1101 и записывать сигналы
@@ -22,6 +31,8 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
   late TabController _tabController;
   bool _tabControllerInitialized = false;
   int _selectedModule = 0;
+  // Действия для каждого модуля (независимые)
+  final List<ModuleAction> _selectedActions = [];
   
   // Конфигурации для каждого модуля
   final List<RecordConfig> _recordConfigs = [];
@@ -47,24 +58,42 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
   // Время последнего обнаружения частоты для каждого модуля
   final Map<int, DateTime> _lastFrequencyDetectionTime = {};
   
+  // Флаг для отслеживания, было ли выполнено автоматическое переключение при открытии
+  bool _hasAutoSwitched = false;
+  
+  BleProvider? _bleProvider;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Сохраняем ссылку на BleProvider когда виджет активен
+    if (_bleProvider == null) {
+      _bleProvider = Provider.of<BleProvider>(context, listen: false);
+      _bleProvider?.addListener(_onRecordedFilesChanged);
+      _bleProvider?.addListener(_onModuleStateChanged);
+    }
+    
+    // Проверяем состояние модулей при возврате на экран
+    if (_tabControllerInitialized && !_hasAutoSwitched) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _checkAndSwitchToActiveModule();
+        }
+      });
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     _initializeConfigs();
-    
-    // Слушаем изменения в recordedRuntimeFiles для отслеживания новых файлов
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final bleProvider = Provider.of<BleProvider>(context, listen: false);
-      bleProvider.addListener(_onRecordedFilesChanged);
-    });
   }
   
   void _onRecordedFilesChanged() {
     if (!mounted) return; // Проверяем, что виджет еще активен
     
     print('_onRecordedFilesChanged called');
-    final bleProvider = Provider.of<BleProvider>(context, listen: false);
-    final runtimeFiles = bleProvider.recordedRuntimeFiles ?? [];
+    final runtimeFiles = _bleProvider?.recordedRuntimeFiles ?? [];
     print('Runtime files: $runtimeFiles');
     
     // Добавляем новые файлы в локальный список записанных файлов
@@ -95,6 +124,39 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
     print('Current recorded files count: ${_recordedFiles.length}');
   }
   
+  /// Слушатель изменений состояния модулей
+  void _onModuleStateChanged() {
+    if (!mounted || !_tabControllerInitialized) return;
+    
+    // Проверяем, нужно ли переключиться на активный модуль
+    // Переключаемся только если текущий модуль не активен, а другой активен
+    bool currentModuleActive = false;
+    if (_selectedModule < _recordConfigs.length) {
+      currentModuleActive = _bleProvider?.isModuleJamming(_selectedModule) == true ||
+                           _bleProvider?.isModuleRecording(_selectedModule) == true;
+    }
+    
+    // Если текущий модуль не активен, проверяем другие модули
+    if (!currentModuleActive) {
+      _checkAndSwitchToActiveModule();
+    } else {
+      // Обновляем выбранное действие для текущего модуля
+      if (_bleProvider?.isModuleJamming(_selectedModule) == true) {
+        if (_selectedActions[_selectedModule] != ModuleAction.jamming) {
+          setState(() {
+            _selectedActions[_selectedModule] = ModuleAction.jamming;
+          });
+        }
+      } else if (_bleProvider?.isModuleRecording(_selectedModule) == true) {
+        if (_selectedActions[_selectedModule] != ModuleAction.recording) {
+          setState(() {
+            _selectedActions[_selectedModule] = ModuleAction.recording;
+          });
+        }
+      }
+    }
+  }
+  
   void _clearCurrentSession() {
     setState(() {
       _currentSessionFiles.clear();
@@ -118,9 +180,10 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
     _tabController.dispose();
     _disposeControllers();
     
-    // Удаляем слушатель
-    final bleProvider = Provider.of<BleProvider>(context, listen: false);
-    bleProvider.removeListener(_onRecordedFilesChanged);
+    // Удаляем слушатели используя сохраненную ссылку
+    _bleProvider?.removeListener(_onRecordedFilesChanged);
+    _bleProvider?.removeListener(_onModuleStateChanged);
+    _bleProvider = null;
     
     super.dispose();
   }
@@ -138,6 +201,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
       
       _configsChanged.add(false);
       _isAdvancedExpanded.add(false);
+      _selectedActions.add(ModuleAction.recording); // По умолчанию Recording
       
       // Создаем контроллеры для полей ввода
       _frequencyControllers.add(TextEditingController(text: '433.92'));
@@ -167,6 +231,9 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
               print('TabController animation: Progress ${progress.toStringAsFixed(2)}, Module $currentIndex');
             }
           });
+          
+          // Проверяем состояние модулей и переключаемся на активный
+          _checkAndSwitchToActiveModule();
         });
       }
     });
@@ -193,6 +260,40 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
     print('_updateSelectedModule: Changed to module $index (handled by TabController listener)');
   }
   
+  /// Проверяет состояние модулей и переключается на активный (jamming или recording)
+  void _checkAndSwitchToActiveModule() {
+    if (_bleProvider == null || !_tabControllerInitialized) return;
+    
+    // Приоритет: jamming > recording
+    // Сначала проверяем jamming
+    for (int i = 0; i < _recordConfigs.length; i++) {
+      if (_bleProvider!.isModuleJamming(i)) {
+        print('RecordScreen: Module $i is jamming, switching to module $i and jamming tab');
+        setState(() {
+          _selectedModule = i;
+          _selectedActions[i] = ModuleAction.jamming;
+          _tabController.animateTo(i);
+          _hasAutoSwitched = true;
+        });
+        return;
+      }
+    }
+    
+    // Затем проверяем recording
+    for (int i = 0; i < _recordConfigs.length; i++) {
+      if (_bleProvider!.isModuleRecording(i)) {
+        print('RecordScreen: Module $i is recording, switching to module $i and recording tab');
+        setState(() {
+          _selectedModule = i;
+          _selectedActions[i] = ModuleAction.recording;
+          _tabController.animateTo(i);
+          _hasAutoSwitched = true;
+        });
+        return;
+      }
+    }
+  }
+  
   void _updateConfig(int moduleIndex, RecordConfig newConfig) {
     if (mounted) {
       setState(() {
@@ -200,6 +301,13 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
         _configsChanged[moduleIndex] = true;
       });
     }
+  }
+
+  /// Проверяет, занят ли модуль (записывает, джаммит, передает и т.д.)
+  bool _isModuleBusy(int moduleIndex, BleProvider bleProvider) {
+    return bleProvider.isModuleRecording(moduleIndex) ||
+           bleProvider.isModuleJamming(moduleIndex) ||
+           !bleProvider.isModuleAvailable(moduleIndex);
   }
 
   void _startFrequencySearch(int moduleIndex, BleProvider bleProvider) async {
@@ -246,17 +354,18 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
     try {
       // Send idle command to stop frequency search
       await bleProvider.sendIdleCommand(moduleIndex);
-      _showSuccessSnackBar('Frequency search stopped for Module ${moduleIndex + 1}');
+      _showSuccessSnackBar(AppLocalizations.of(context)!.frequencySearchStoppedForModule(moduleIndex + 1));
     } catch (e) {
       _showErrorSnackBar('Failed to stop frequency search: $e');
     }
   }
   
-  void _startRecording(int moduleIndex) async {
+  void _startJamming(int moduleIndex) async {
     final bleProvider = Provider.of<BleProvider>(context, listen: false);
     
+    final l10n = AppLocalizations.of(context)!;
     if (!bleProvider.isConnected) {
-      _showErrorDialog('Ошибка', 'Устройство не подключено');
+      _showErrorDialog(l10n.error, l10n.deviceNotConnected);
       return;
     }
     
@@ -264,8 +373,67 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
     if (!bleProvider.isModuleAvailable(moduleIndex)) {
       final status = bleProvider.getModuleStatus(moduleIndex);
       _showErrorDialog(
-        'Модуль занят', 
-        'Модуль ${moduleIndex + 1} сейчас в режиме "$status".\nДождитесь завершения текущей операции или переведите модуль в режим Idle.'
+        l10n.moduleBusy, 
+        l10n.moduleBusyMessage(moduleIndex + 1, status)
+      );
+      return;
+    }
+    
+    final config = _recordConfigs[moduleIndex];
+    
+    try {
+      // Отправляем команду джамминга с параметрами из текущей конфигурации
+      await bleProvider.sendStartJamCommand(
+        module: moduleIndex,
+        frequency: config.frequency,
+        power: 7, // Максимальная мощность по умолчанию
+        patternType: 0, // Random pattern по умолчанию
+        maxDurationMs: 60000, // 60 секунд
+        cooldownMs: 5000, // 5 секунд пауза
+      );
+      
+      // Запрашиваем актуальное состояние устройства
+      await bleProvider.sendGetStateCommand();
+      
+      _showSuccessSnackBar(l10n.jammingStarted(moduleIndex + 1));
+    } catch (e) {
+      _showErrorDialog(l10n.jammingError, l10n.jammingStartFailed(e.toString()));
+    }
+  }
+
+  void _stopJamming(int moduleIndex) async {
+    final bleProvider = Provider.of<BleProvider>(context, listen: false);
+    final l10n = AppLocalizations.of(context)!;
+    
+    if (!bleProvider.isConnected) {
+      _showErrorDialog(l10n.error, l10n.deviceNotConnected);
+      return;
+    }
+    
+    try {
+      await bleProvider.sendIdleCommand(moduleIndex);
+      await bleProvider.sendGetStateCommand();
+      _showSuccessSnackBar(l10n.jammingStopped(moduleIndex + 1));
+    } catch (e) {
+      _showErrorDialog(l10n.jammingError, l10n.jammingStopFailed(e.toString()));
+    }
+  }
+
+  void _startRecording(int moduleIndex) async {
+    final bleProvider = Provider.of<BleProvider>(context, listen: false);
+    
+    final l10n = AppLocalizations.of(context)!;
+    if (!bleProvider.isConnected) {
+      _showErrorDialog(l10n.error, l10n.deviceNotConnected);
+      return;
+    }
+    
+    // Проверяем доступность модуля
+    if (!bleProvider.isModuleAvailable(moduleIndex)) {
+      final status = bleProvider.getModuleStatus(moduleIndex);
+      _showErrorDialog(
+        l10n.moduleBusy, 
+        l10n.moduleBusyMessage(moduleIndex + 1, status)
       );
       return;
     }
@@ -274,7 +442,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
     final errors = bleProvider.validateRecordConfig(config);
     
     if (errors.isNotEmpty) {
-      _showErrorDialog('Ошибка валидации', errors.join('\n'));
+      _showErrorDialog(l10n.validationError, errors.join('\n'));
       return;
     }
     
@@ -294,9 +462,9 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
        // Запрашиваем актуальное состояние устройства
        await bleProvider.sendGetStateCommand();
        
-       _showSuccessSnackBar('Запись начата на модуле ${moduleIndex + 1}');
+       _showSuccessSnackBar(l10n.recordingStarted(moduleIndex + 1));
      } catch (e) {
-       _showErrorDialog('Ошибка записи', 'Не удалось начать запись: $e');
+       _showErrorDialog(l10n.recordingError, l10n.recordingStartFailed(e.toString()));
      }
   }
   
@@ -309,9 +477,11 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
       // Запрашиваем актуальное состояние устройства
       await bleProvider.sendGetStateCommand();
       
-      _showSuccessSnackBar('Запись остановлена на модуле ${moduleIndex + 1}');
+      final l10n = AppLocalizations.of(context)!;
+      _showSuccessSnackBar(l10n.recordingStopped(moduleIndex + 1));
     } catch (e) {
-      _showErrorDialog('Ошибка', 'Не удалось остановить запись: $e');
+      final l10n = AppLocalizations.of(context)!;
+      _showErrorDialog(l10n.error, l10n.recordingStopFailed(e.toString()));
     }
   }
 
@@ -347,6 +517,47 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
     );
   }
 
+  /// Оверлей затемнения когда модуль занят
+  Widget _buildBusyOverlay() {
+    return Positioned.fill(
+      child: Container(
+        color: AppColors.primaryBackground.withOpacity(0.9),
+        child: Center(
+          child: Consumer<BleProvider>(
+            builder: (context, bleProvider, child) {
+              final status = bleProvider.getModuleStatus(_selectedModule);
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.block,
+                    color: AppColors.error,
+                    size: 48,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    AppLocalizations.of(context)!.moduleBusy,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: AppColors.primaryText,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    status,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: AppColors.secondaryText,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildRecordSettingsOverlay() {
     return Consumer<BleProvider>(
       builder: (context, bleProvider, child) {
@@ -362,7 +573,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
         
         return Positioned.fill(
           child: Container(
-            color: Colors.black.withOpacity(0.7),
+            color: AppColors.logBackground.withOpacity(0.95),
             child: Center(
               child: SingleChildScrollView(
                 child: Column(
@@ -379,26 +590,26 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
                       width: 50,
                       height: 50,
                       decoration: BoxDecoration(
-                        color: Colors.red.withOpacity(0.1),
+                        color: AppColors.recording.withOpacity(0.1),
                         shape: BoxShape.circle,
                         border: Border.all(
-                          color: Colors.red,
+                          color: AppColors.recording,
                           width: 2,
                         ),
                       ),
-                      child: const Icon(
+                      child: Icon(
                         Icons.fiber_manual_record,
-                        color: Colors.red,
+                        color: AppColors.recording,
                         size: 24,
                       ),
                     ),
                         const SizedBox(width: 12),
                         // Текст "Recording"
                     Text(
-                      'Recording',
+                      AppLocalizations.of(context)!.recordingShort,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.bold,
-                        color: Colors.red,
+                        color: AppColors.recording,
                       ),
                     ),
                       ],
@@ -439,7 +650,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
     if (config == null) {
       return Text(
         'Settings not available',
-        style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.white),
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: AppColors.primaryText),
       );
     }
     
@@ -454,44 +665,44 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
           children: [
             _buildInfoItem(
               context,
-              Icons.signal_cellular_alt,
-              '${config.frequency.toStringAsFixed(1)} MHz',
-              'Freq',
+              Icons.graphic_eq,
+              '${config.frequency.toStringAsFixed(1)} ${AppLocalizations.of(context)!.mhz}',
+              AppLocalizations.of(context)!.freqShort,
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 11),
             _buildInfoItem(
               context,
-              Icons.tune,
+              Icons.radio,
               config.modulationName,
-              'Mod',
+              AppLocalizations.of(context)!.modShort,
             ),
           ],
         ),
-        const SizedBox(height: 4),
+        const SizedBox(height: 9),
         // Вторая строка: Rate, BW, Dev (с Wrap для переноса)
         Wrap(
           alignment: WrapAlignment.center,
-          spacing: 8,
-          runSpacing: 4,
+          spacing: 11,
+          runSpacing: 9,
           children: [
             _buildInfoItem(
               context,
               Icons.speed,
-              '${(config.dataRate / 1000).toStringAsFixed(1)} kbps',
-              'Rate',
+              '${(config.dataRate / 1000).toStringAsFixed(1)} ${AppLocalizations.of(context)!.kbaud}',
+              AppLocalizations.of(context)!.rateShort,
             ),
             _buildInfoItem(
               context,
-              Icons.signal_cellular_4_bar,
-              '${(config.bandwidth / 1000).toStringAsFixed(1)} kHz',
-              'BW',
+              Icons.straighten,
+              '${(config.bandwidth / 1000).toStringAsFixed(1)} ${AppLocalizations.of(context)!.khz}',
+              AppLocalizations.of(context)!.bwShort,
         ),
             // Deviation для FM модуляций (2-FSK, GFSK, 4-FSK) - показываем всегда для FSK модуляций
             if (config.modulationName.contains('FSK') || config.modulation == 0 || config.modulation == 1)
           _buildInfoItem(
             context,
             Icons.tune,
-            '${(config.deviation / 1000).toStringAsFixed(2)} kHz',
+            '${(config.deviation / 1000).toStringAsFixed(2)} ${AppLocalizations.of(context)!.khz}',
                 'Dev',
           ),
         ],
@@ -503,13 +714,17 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
   Widget _buildInfoItem(BuildContext context, IconData icon, String value, String label) {
     return Row(
       mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(
-          icon,
-          size: 12,
-          color: Colors.white.withOpacity(0.8),
+        Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: Icon(
+            icon,
+            size: 16,
+            color: AppColors.primaryText.withOpacity(0.8),
+          ),
         ),
-        const SizedBox(width: 3),
+        const SizedBox(width: 4),
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
@@ -518,7 +733,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
               value,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 fontWeight: FontWeight.w500,
-                color: Colors.white,
+                color: AppColors.primaryText,
                 fontSize: 11,
               ),
               overflow: TextOverflow.ellipsis,
@@ -526,7 +741,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
             Text(
               label,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Colors.white.withOpacity(0.7),
+                color: AppColors.secondaryText,
                 fontSize: 9,
               ),
               overflow: TextOverflow.ellipsis,
@@ -586,6 +801,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
                 // Используем анимацию для плавного перехода
                 setState(() {
                   _selectedModule = index;
+                  _hasAutoSwitched = false; // Сбрасываем флаг при ручном переключении
                 });
                 print('Tab tap: Changed to module $index');
               },
@@ -598,17 +814,20 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
                   return Consumer<BleProvider>(
                     builder: (context, bleProvider, child) {
                       final isAvailable = bleProvider.isModuleAvailable(index);
+                      final isRecording = bleProvider.isModuleRecording(index);
+                      final isJamming = bleProvider.isModuleJamming(index);
+                      final isBusy = !isAvailable || isRecording || isJamming;
                       final status = bleProvider.getModuleStatus(index);
                       
                 return Tab(
                         icon: Stack(
                           children: [
                             Icon(
-                              Icons.signal_cellular_alt, 
+                              Icons.settings_input_antenna, 
                               size: 18,
-                              color: isAvailable ? null : Colors.grey,
+                              color: isAvailable ? null : AppColors.disabledText,
                             ),
-                            if (!isAvailable)
+                            if (isBusy)
                               Positioned(
                                 right: 0,
                                 top: 0,
@@ -616,14 +835,14 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
                                   width: 8,
                                   height: 8,
                                   decoration: BoxDecoration(
-                                    color: Colors.red,
+                                    color: AppColors.error,
                                     shape: BoxShape.circle,
                                   ),
                                 ),
                               ),
                           ],
                         ),
-                  text: 'Module ${index + 1}',
+                  text: AppLocalizations.of(context)!.subGhzModule(index + 1),
                   iconMargin: const EdgeInsets.only(bottom: 2),
                       );
                     },
@@ -631,6 +850,38 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
               }).toList(),
               ) : const Center(child: CircularProgressIndicator()),
             ),
+                 
+                 // Выбор действия
+                 Container(
+                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                   color: Theme.of(context).colorScheme.surface,
+                   width: double.infinity,
+                   child: SegmentedButton<ModuleAction>(
+                     style: SegmentedButton.styleFrom(
+                       shape: const RoundedRectangleBorder(
+                         borderRadius: BorderRadius.zero,
+                       ),
+                     ),
+                     showSelectedIcon: false,
+                     segments: [
+                       ButtonSegment<ModuleAction>(
+                         value: ModuleAction.recording,
+                         label: Text(AppLocalizations.of(context)!.recording),
+                       ),
+                       ButtonSegment<ModuleAction>(
+                         value: ModuleAction.jamming,
+                         label: Text(AppLocalizations.of(context)!.jamming),
+                       ),
+                     ],
+                     selected: {_selectedActions[_selectedModule]},
+                     onSelectionChanged: (Set<ModuleAction> newSelection) {
+                       setState(() {
+                         _selectedActions[_selectedModule] = newSelection.first;
+                       });
+                     },
+                   ),
+                 ),
+                 
                  // Контент модулей
           Expanded(
                    child: _tabControllerInitialized ? TabBarView(
@@ -644,8 +895,8 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
                    ) : const Center(child: CircularProgressIndicator()),
             ),
             
-            // Кнопка записи прилеплена к низу с анимацией
-            _buildRecordingButton(),
+            // Кнопка записи/остановки поиска частоты прилеплена к низу
+            _buildBottomButton(),
         ],
         ),
       ),
@@ -656,27 +907,34 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
     return Consumer<BleProvider>(
       builder: (context, bleProvider, child) {
         final isRecording = bleProvider.isModuleRecording(moduleIndex);
-        print('RecordScreen: Module $moduleIndex, isRecording=$isRecording');
-        print('RecordScreen: Current selected module: $_selectedModule');
+        final isJamming = bleProvider.isModuleJamming(moduleIndex);
+        final isBusy = _isModuleBusy(moduleIndex, bleProvider);
+        
+        final selectedAction = _selectedActions[moduleIndex];
+        print('RecordScreen: Module $moduleIndex, isRecording=$isRecording, isJamming=$isJamming, isBusy=$isBusy');
+        print('RecordScreen: Current selected module: $_selectedModule, action: $selectedAction');
         
         return SingleChildScrollView(
           padding: const EdgeInsets.all(12.0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Настройки записи с оверлеем записи
+              // Настройки записи/джамминга с оверлеем
               Stack(
                 children: [
-              _buildRecordSettings(moduleIndex, config, isRecording),
-                  // Оверлей записи только на область настроек (всегда показываем для тестирования)
-                  _buildRecordSettingsOverlay(),
+                  _buildRecordSettings(moduleIndex, config, isBusy, selectedAction),
+                  // Оверлей затемнения когда модуль занят
+                  if (isBusy) _buildBusyOverlay(),
+                  // Оверлей записи только на область настроек
+                  if (isRecording) _buildRecordSettingsOverlay(),
                 ],
               ),
               
               const SizedBox(height: 12),
               
-              // Список файлов для этого модуля
-              _buildModuleFilesList(moduleIndex),
+              // Список файлов только для Recording
+              if (selectedAction == ModuleAction.recording)
+                _buildModuleFilesList(moduleIndex),
             ],
           ),
         );
@@ -684,53 +942,26 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
     );
   }
 
-  Widget _buildRecordingButton() {
+  Widget _buildBottomButton() {
     // Определяем состояние кнопки вне Consumer для правильной работы анимации
-    final isRecording = Provider.of<BleProvider>(context, listen: true).isModuleRecording(_selectedModule);
-    final isAvailable = Provider.of<BleProvider>(context, listen: true).isModuleAvailable(_selectedModule);
-    final config = _recordConfigs[_selectedModule];
+    final bleProvider = Provider.of<BleProvider>(context, listen: true);
+    final isRecording = bleProvider.isModuleRecording(_selectedModule);
+    final isJamming = bleProvider.isModuleJamming(_selectedModule);
+    final isAvailable = bleProvider.isModuleAvailable(_selectedModule);
+    final isFrequencySearching = bleProvider.isModuleFrequencySearching(_selectedModule);
     
-    print('_buildRecordingButton: Selected module: $_selectedModule, isRecording: $isRecording, isAvailable: $isAvailable');
+    final selectedAction = _selectedActions[_selectedModule];
+    final l10n = AppLocalizations.of(context)!;
     
-    // Определяем состояние кнопки
-    bool isEnabled = true;
-    String buttonText = 'Start Recording';
-    IconData buttonIcon = Icons.fiber_manual_record;
-    Color buttonColor = Colors.red;
-    
-    if (isRecording) {
-      buttonText = 'Stop Recording';
-      buttonIcon = Icons.stop;
-      buttonColor = Colors.orange;
-    } else if (!isAvailable) {
-      isEnabled = false;
-      buttonText = 'Module Busy';
-      buttonIcon = Icons.block;
-      buttonColor = Colors.grey;
-    }
-    
-    return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 300),
-      transitionBuilder: (Widget child, Animation<double> animation) {
-        return SlideTransition(
-          position: Tween<Offset>(
-            begin: const Offset(0.0, 1.0),
-            end: Offset.zero,
-          ).animate(CurvedAnimation(
-            parent: animation,
-            curve: Curves.easeInOut,
-          )),
-          child: child,
-        );
-      },
-      child: Container(
-        key: ValueKey('recording_button_$_selectedModule'),
+    // Если идет поиск частоты, показываем кнопку остановки поиска
+    if (isFrequencySearching) {
+      return Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
+          color: AppColors.secondaryBackground,
           border: Border(
             top: BorderSide(
-              color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
+              color: AppColors.divider,
               width: 1,
             ),
           ),
@@ -739,20 +970,87 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
           child: SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
-              onPressed: isEnabled 
-                ? (isRecording 
-                    ? () => _stopRecording(_selectedModule)
-                    : () => _startRecording(_selectedModule))
-                : null,
-              icon: Icon(buttonIcon),
-              label: Text('$buttonText (Module ${_selectedModule + 1})'),
+              onPressed: () => _stopFrequencySearch(_selectedModule, bleProvider),
+              icon: const Icon(Icons.stop, color: AppColors.primaryBackground),
+              label: Text('${l10n.stopFrequencySearch} (${l10n.module(_selectedModule + 1)})'),
               style: ElevatedButton.styleFrom(
-                backgroundColor: buttonColor,
-                foregroundColor: Colors.white,
+                backgroundColor: AppColors.error,
+                foregroundColor: AppColors.primaryBackground,
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(6),
                 ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    
+    // Обычная кнопка записи/джамминга
+    String buttonText;
+    IconData buttonIcon;
+    Color buttonColor;
+    VoidCallback? onPressed;
+    
+    if (selectedAction == ModuleAction.recording) {
+      if (isRecording) {
+        buttonText = l10n.stopRecording;
+        buttonIcon = Icons.stop;
+        buttonColor = AppColors.error; // Остановка записи - красный
+        onPressed = () => _stopRecording(_selectedModule);
+      } else {
+        buttonText = l10n.startRecording;
+        buttonIcon = Icons.radio_button_checked; // Та же иконка что и в меню
+        buttonColor = AppColors.primaryAccent; // Синий для старта
+        onPressed = isAvailable ? () => _startRecording(_selectedModule) : null;
+      }
+    } else { // jamming
+      if (isJamming) {
+        buttonText = l10n.stopJamming;
+        buttonIcon = Icons.stop;
+        buttonColor = AppColors.error; // Остановка глушения - красный
+        onPressed = () => _stopJamming(_selectedModule);
+      } else {
+        buttonText = l10n.startJamming;
+        buttonIcon = Icons.block;
+        buttonColor = AppColors.primaryAccent; // Синий для старта
+        onPressed = isAvailable ? () => _startJamming(_selectedModule) : null;
+      }
+    }
+    
+    if (!isAvailable && !isRecording && !isJamming) {
+      buttonText = l10n.moduleBusy;
+      buttonIcon = Icons.block;
+      buttonColor = AppColors.disabledText;
+      onPressed = null;
+    }
+    
+    return Container(
+      key: ValueKey('action_button_$_selectedModule${_selectedActions[_selectedModule]}'),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.secondaryBackground,
+        border: Border(
+          top: BorderSide(
+            color: AppColors.divider,
+            width: 1,
+          ),
+        ),
+      ),
+      child: SafeArea(
+        child: SizedBox(
+          width: double.infinity,
+            child: ElevatedButton.icon(
+            onPressed: onPressed,
+            icon: Icon(buttonIcon, color: AppColors.primaryBackground),
+            label: Text('$buttonText (${l10n.module(_selectedModule + 1)})'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: buttonColor,
+              foregroundColor: AppColors.primaryBackground,
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(6),
               ),
             ),
           ),
@@ -798,7 +1096,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
             ),
             const SizedBox(width: 4),
             Text(
-              (config.advancedMode && _isAdvancedExpanded[moduleIndex]) ? 'presets' : 'advanced',
+              (config.advancedMode && _isAdvancedExpanded[moduleIndex]) ? AppLocalizations.of(context)!.presets : AppLocalizations.of(context)!.advanced,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
                 fontSize: 11,
@@ -820,19 +1118,19 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
     
     switch (mode.toLowerCase()) {
       case 'idle':
-        statusColor = Colors.green;
+        statusColor = AppColors.idle;
         statusIcon = Icons.pause_circle;
         break;
       case 'recordsignal':
-        statusColor = Colors.orange;
+        statusColor = AppColors.recording;
         statusIcon = Icons.fiber_manual_record;
         break;
       case 'detectsignal':
-        statusColor = Colors.blue;
+        statusColor = AppColors.searching;
         statusIcon = Icons.radar;
         break;
       default:
-        statusColor = Colors.grey;
+        statusColor = AppColors.secondaryText;
         statusIcon = Icons.help_outline;
     }
     
@@ -858,7 +1156,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
                   if (mode != 'Idle' && config != null) ...[
                     const SizedBox(height: 2),
                   Text(
-                      '${config.frequency}MHz, ${config.dataRate}kbps',
+                      '${config.frequency}${AppLocalizations.of(context)!.mhz}, ${config.dataRate}${AppLocalizations.of(context)!.kbaud}',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
                     ),
@@ -873,7 +1171,12 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
     );
   }
   
-  Widget _buildRecordSettings(int moduleIndex, RecordConfig config, bool isRecording) {
+  Widget _buildRecordSettings(int moduleIndex, RecordConfig config, bool isBusy, ModuleAction selectedAction) {
+    final l10n = AppLocalizations.of(context)!;
+    final title = selectedAction == ModuleAction.recording 
+        ? l10n.recordSettings 
+        : l10n.jammingSettings;
+    
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12.0),
@@ -881,9 +1184,10 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Record Settings',
+              title,
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                 fontWeight: FontWeight.bold,
+                color: AppColors.primaryText,
               ),
             ),
             const SizedBox(height: 12),
@@ -907,7 +1211,10 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
                        // Sort by timestamp (newest first) to ensure we get the latest
                        moduleSignals.sort((a, b) => b.timestamp.compareTo(a.timestamp));
                        
-                       if (moduleSignals.isNotEmpty) {
+                       // Check if frequency search is active - if so, don't update the dropdown
+                       final isFrequencySearching = bleProvider.isModuleFrequencySearching(moduleIndex);
+                       
+                       if (moduleSignals.isNotEmpty && !isFrequencySearching) {
                          // Use the most recent detected frequency (first after sort)
                          final latestSignal = moduleSignals.first;
                          final detectedFreq = double.tryParse(latestSignal.frequency);
@@ -976,7 +1283,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
                        return DropdownButtonFormField<String>(
                          key: ValueKey('freq_dropdown_${moduleIndex}_$latestSignalKey'),
                          value: currentFrequency,
-                         onChanged: (!isRecording && !bleProvider.isModuleFrequencySearching(moduleIndex)) ? (value) {
+                         onChanged: (!isBusy && !bleProvider.isModuleFrequencySearching(moduleIndex)) ? (value) {
                  if (value != null) {
                              final frequency = double.tryParse(value);
                              if (frequency != null) {
@@ -985,13 +1292,13 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
                  }
                } : null,
                          decoration: InputDecoration(
-                           labelText: 'Frequency (MHz)',
+                           labelText: '${AppLocalizations.of(context)!.frequency} (${AppLocalizations.of(context)!.mhz})',
                            border: const OutlineInputBorder(),
-                           prefixIcon: const Icon(Icons.radio),
+                           prefixIcon: const Icon(Icons.graphic_eq),
                            suffixIcon: shouldShowIcon ? 
                              Icon(
                                Icons.check_circle,
-                               color: Colors.green,
+                               color: AppColors.success,
                                size: 16,
                              ) : null,
                            isDense: true,
@@ -1001,9 +1308,14 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
                          items: CC1101Values.frequencies.map((freq) {
                            return DropdownMenuItem<String>(
                              value: freq,
-                             child: Text(freq),
+                             child: Text(
+                               freq,
+                               style: TextStyle(color: AppColors.secondaryText),
+                             ),
                            );
                          }).toList(),
+                         dropdownColor: AppColors.secondaryBackground,
+                         style: TextStyle(color: AppColors.primaryText),
                        );
                      },
                    ),
@@ -1016,11 +1328,11 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
                        onPressed: isSearching ? () => _stopFrequencySearch(moduleIndex, bleProvider) : () => _startFrequencySearch(moduleIndex, bleProvider),
                        icon: Icon(
                          isSearching ? Icons.stop : Icons.search,
-                         color: isSearching ? Colors.red : null,
+                         color: isSearching ? AppColors.error : null,
                        ),
-                       tooltip: isSearching ? 'Stop frequency search' : 'Search for frequency',
+                       tooltip: isSearching ? AppLocalizations.of(context)!.stopFrequencySearch : AppLocalizations.of(context)!.searchForFrequency,
                        style: IconButton.styleFrom(
-                         backgroundColor: isSearching ? Colors.red.withOpacity(0.1) : null,
+                         backgroundColor: isSearching ? AppColors.error.withOpacity(0.1) : null,
                ),
                      );
                    },
@@ -1030,31 +1342,36 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
             
             const SizedBox(height: 12),
             
-            // Настройки в зависимости от режима
-            if (config.advancedMode && _isAdvancedExpanded[moduleIndex]) ...[
-              _buildAdvancedSettings(moduleIndex, config, isRecording),
+            // Настройки в зависимости от действия
+            if (selectedAction == ModuleAction.recording) ...[
+              // Настройки записи в зависимости от режима
+              if (config.advancedMode && _isAdvancedExpanded[moduleIndex]) ...[
+                _buildAdvancedSettings(moduleIndex, config, isBusy),
+              ] else ...[
+                _buildSimpleSettings(moduleIndex, config, isBusy),
+              ],
+              // Узкая полоска с кнопкой "advanced" внизу формы
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: _buildAdvancedModeToggle(moduleIndex, config),
+              ),
             ] else ...[
-              _buildSimpleSettings(moduleIndex, config, isRecording),
+              // Настройки для jamming (только частота, так как остальные параметры фиксированы)
+              // Для jamming показываем только частоту, остальные параметры передаются с фиксированными значениями
             ],
-            
-            // Узкая полоска с кнопкой "advanced" внизу формы
-            Padding(
-              padding: const EdgeInsets.only(top: 12),
-              child: _buildAdvancedModeToggle(moduleIndex, config),
-            ),
           ],
         ),
       ),
     );
   }
   
-  Widget _buildSimpleSettings(int moduleIndex, RecordConfig config, bool isRecording) {
+  Widget _buildSimpleSettings(int moduleIndex, RecordConfig config, bool isBusy) {
     return Consumer<BleProvider>(
       builder: (context, bleProvider, child) {
         final isFrequencySearching = bleProvider.isModuleFrequencySearching(moduleIndex);
     return PresetSelector(
       value: config.preset,
-          onChanged: (isRecording || isFrequencySearching) ? null : (value) {
+          onChanged: (isBusy || isFrequencySearching) ? null : (value) {
         if (value != null) {
           _updateConfig(moduleIndex, config.copyWith(preset: value));
         }
@@ -1064,7 +1381,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
     );
   }
   
-  Widget _buildAdvancedSettings(int moduleIndex, RecordConfig config, bool isRecording) {
+  Widget _buildAdvancedSettings(int moduleIndex, RecordConfig config, bool isBusy) {
     return Consumer<BleProvider>(
       builder: (context, bleProvider, child) {
         final isFrequencySearching = bleProvider.isModuleFrequencySearching(moduleIndex);
@@ -1074,7 +1391,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
         BandwidthSelector(
           controller: _bandwidthControllers[moduleIndex],
           value: config.rxBandwidth,
-              onChanged: (isRecording || isFrequencySearching) ? null : (value) {
+              onChanged: (isBusy || isFrequencySearching) ? null : (value) {
             if (value != null) {
               _updateConfig(moduleIndex, config.copyWith(rxBandwidth: value));
             }
@@ -1087,7 +1404,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
         DataRateInputField(
           controller: _dataRateControllers[moduleIndex],
           value: config.dataRate,
-              onChanged: (isRecording || isFrequencySearching) ? null : (value) {
+              onChanged: (isBusy || isFrequencySearching) ? null : (value) {
             if (value != null) {
               _updateConfig(moduleIndex, config.copyWith(dataRate: value));
             }
@@ -1099,20 +1416,24 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
         // Тип модуляции
         ModulationSelector(
           value: config.modulation,
-              onChanged: (isRecording || isFrequencySearching) ? null : (value) {
+              onChanged: (isBusy || isFrequencySearching) ? null : (value) {
             if (value != null) {
               _updateConfig(moduleIndex, config.copyWith(modulation: value));
             }
           },
         ),
         
-        // Девиация (только для FM модуляции)
-        if (config.modulation == '2-FSK') ...[
+        // Девиация (для всех FM модуляций: 2-FSK, GFSK, 4-FSK, MSK)
+        if (config.modulation != null && 
+            (config.modulation == '2-FSK' || 
+             config.modulation == 'GFSK' || 
+             config.modulation == '4-FSK' || 
+             config.modulation == 'MSK')) ...[
           const SizedBox(height: 16),
           DeviationInputField(
             controller: _deviationControllers[moduleIndex],
             value: config.deviation,
-                onChanged: (isRecording || isFrequencySearching) ? null : (value) {
+                onChanged: (isBusy || isFrequencySearching) ? null : (value) {
               if (value != null) {
                 _updateConfig(moduleIndex, config.copyWith(deviation: value));
               }
@@ -1184,19 +1505,36 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
           print('_buildModuleFilesList: File $i: name="${file.name}", size=${file.size}, isDirectory=${file.isDirectory}');
         }
         
-        return SizedBox(
-          height: 200,
-          child: FileListWidget(
-            files: moduleFiles,
-            mode: FileListMode.local,
-               title: 'Module ${moduleIndex + 1} Signals Recorded (${moduleFiles.length})',
-            showHeader: true,
-            showActions: true,
-            filterExtension: 'sub',
-            onRefresh: null, // Отключаем pull-to-refresh
-            onFileSelected: (file) => _openFileViewer(file),
-            onFileAction: (file, action) => _handleRecordedFileAction(file, action),
-          ),
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Заголовок как у формы настроек
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12.0),
+              child: Text(
+                AppLocalizations.of(context)!.signalsCaptured(moduleIndex + 1, moduleFiles.length),
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.primaryText,
+                ),
+              ),
+            ),
+            // Список файлов без заголовка
+            SizedBox(
+              height: 200,
+              child: FileListWidget(
+                files: moduleFiles,
+                mode: FileListMode.local,
+                title: AppLocalizations.of(context)!.signalsCaptured(moduleIndex + 1, moduleFiles.length),
+                showHeader: false,
+                showActions: true,
+                filterExtension: 'sub',
+                onRefresh: null, // Отключаем pull-to-refresh
+                onFileSelected: (file) => _openFileViewer(file),
+                onFileAction: (file, action) => _handleRecordedFileAction(file, action),
+              ),
+            ),
+          ],
         );
       },
     );
@@ -1276,7 +1614,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
           child: FileListWidget(
             files: _recordedFiles,
             mode: FileListMode.local,
-            title: 'Recorded Files',
+            title: AppLocalizations.of(context)!.recordedFiles,
             showHeader: true,
             showActions: true,
             filterExtension: 'sub',
@@ -1299,7 +1637,8 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
       MaterialPageRoute(
         builder: (context) => FileViewerScreen(
           fileItem: file,
-          filePath: '/DATA/SIGNALS/${file.name}',  // Full path with basePath
+          filePath: file.name,
+          pathType: 1,  // SIGNALS
         ),
       ),
     );
@@ -1313,7 +1652,39 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
         _transmitRecordedFile(file.name, bleProvider);
         break;
       case 'save_to_signals':
-        _saveToSignalsDirectory(file.name, bleProvider);
+        // Получаем дату из объекта файла
+        DateTime? fileDate;
+        try {
+          if (file.dateCreated != null) {
+            fileDate = file.dateCreated as DateTime?;
+          }
+        } catch (e) {
+          // Если не удалось получить дату из объекта, попробуем найти в recordedRuntimeFiles
+        }
+        // Если дата не найдена в объекте, ищем в recordedRuntimeFiles
+        if (fileDate == null) {
+          final runtimeFiles = bleProvider.recordedRuntimeFiles ?? [];
+          for (final runtimeFile in runtimeFiles) {
+            String fileName;
+            if (runtimeFile is Map<String, dynamic> && runtimeFile.containsKey('filename')) {
+              fileName = runtimeFile['filename'].toString();
+              if (fileName == file.name && runtimeFile.containsKey('date')) {
+                try {
+                  if (runtimeFile['date'] is String) {
+                    fileDate = DateTime.tryParse(runtimeFile['date']);
+                  } else if (runtimeFile['date'] is int) {
+                    // Unix timestamp
+                    fileDate = DateTime.fromMillisecondsSinceEpoch(runtimeFile['date'] * 1000);
+                  }
+                } catch (e) {
+                  print('Error parsing date for file ${file.name}: $e');
+                }
+                break;
+              }
+            }
+          }
+        }
+        _saveToSignalsDirectory(file.name, bleProvider, fileDate: fileDate);
         break;
       case 'download':
         // TODO: Implement file download
@@ -1326,15 +1697,18 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
   }
 
   void _transmitRecordedFile(String filename, BleProvider bleProvider) async {
-    try {
-      await bleProvider.transmitFromFile(filename, basePath: '/DATA/SIGNALS');
-      _showSuccessSnackBar('Transmitting file: $filename');
-    } catch (e) {
-      _showErrorSnackBar('Transmission failed: $e');
+    final confirmed = await TransmitFileDialog.showAndTransmit(
+      context,
+      fileName: filename,
+      filePath: filename,
+      pathType: 1, // SIGNALS
+    );
+    if (!confirmed) {
+      return;
     }
   }
 
-  void _saveToSignalsDirectory(String filename, BleProvider bleProvider) async {
+  void _saveToSignalsDirectory(String filename, BleProvider bleProvider, {DateTime? fileDate}) async {
     // Показываем диалог для выбора имени файла
     final TextEditingController nameController = TextEditingController();
     
@@ -1357,17 +1731,17 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: const Text('Save Signal'),
+          title: Text(AppLocalizations.of(context)!.saveSignal),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('Enter a name for the signal:'),
+              Text(AppLocalizations.of(context)!.enterSignalName),
               const SizedBox(height: 16),
               TextField(
                 controller: nameController,
-                decoration: const InputDecoration(
-                  labelText: 'Signal Name',
-                  hintText: 'Enter signal name...',
+                decoration: InputDecoration(
+                  labelText: AppLocalizations.of(context)!.signalName,
+                  hintText: AppLocalizations.of(context)!.enterSignalName,
                   border: OutlineInputBorder(),
                 ),
                 autofocus: true,
@@ -1382,7 +1756,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
+              child: Text(AppLocalizations.of(context)!.cancel),
             ),
             ElevatedButton(
               onPressed: () {
@@ -1391,7 +1765,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
                   Navigator.of(context).pop(name);
                 }
               },
-              child: const Text('Save'),
+              child: Text(AppLocalizations.of(context)!.create),
           ),
       ],
     );
@@ -1410,8 +1784,14 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
         String sourcePath = '/DATA/SIGNALS/$filename';
         
         // Сохраняем с выбранным именем в директорию RECORDS (pathType = 0)
-        await bleProvider.saveFileToSignalsWithName(sourcePath, targetName, pathType: 0);
-        _showSuccessSnackBar('Signal saved as: $targetName');
+        // Передаем дату файла для сохранения
+        await bleProvider.saveFileToSignalsWithName(
+          sourcePath, 
+          targetName, 
+          pathType: 0,
+          preserveDate: fileDate,
+        );
+        _showSuccessSnackBar(AppLocalizations.of(context)!.signalSavedAs(targetName));
       } catch (e) {
         _showErrorSnackBar('Failed to save signal: $e');
       }
@@ -1423,20 +1803,20 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: const Text('Delete Signal'),
-          content: Text('Are you sure you want to delete "$filename"?\n\nThis action cannot be undone.'),
+          title: Text(AppLocalizations.of(context)!.deleteSignal),
+          content: Text(AppLocalizations.of(context)!.deleteSignalConfirm(filename)),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancel'),
+              child: Text(AppLocalizations.of(context)!.cancel),
             ),
             ElevatedButton(
               onPressed: () => Navigator.of(context).pop(true),
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                foregroundColor: Colors.white,
+                backgroundColor: AppColors.error,
+                foregroundColor: AppColors.primaryText,
               ),
-              child: const Text('Delete'),
+              child: Text(AppLocalizations.of(context)!.delete),
                   ),
                 ],
         );
@@ -1445,11 +1825,8 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
     
     if (result == true) {
       try {
-        // Определяем полный путь к файлу
-        String fullPath = '/DATA/SIGNALS/$filename';
-        
-        // Удаляем файл
-        await bleProvider.deleteFile(fullPath);
+        // Удаляем файл из SIGNALS
+        await bleProvider.deleteFile(filename, pathType: 1);  // SIGNALS
         _showSuccessSnackBar('File deleted: $filename');
         
         // Удаляем файл из локального списка записанных файлов
@@ -1483,15 +1860,15 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Record Screen Help'),
-        content: const SingleChildScrollView(
+        title: Text(AppLocalizations.of(context)!.recordScreenHelp),
+        content: SingleChildScrollView(
           child: Text(
             'This screen allows you to record RF signals using the CC1101 modules.\n\n'
             '• Select a module tab to configure its settings\n'
             '• Choose between Simple and Advanced modes\n'
             '• Simple mode uses presets for quick setup\n'
             '• Advanced mode allows fine-tuning of parameters\n'
-            '• Start recording to capture signals\n'
+            '• ${AppLocalizations.of(context)!.startRecordingToCaptureSignals}\n'
             '• Stop recording when done\n'
             '• Recorded files appear in the list below\n\n'
             'Make sure your device is connected before starting recording.',

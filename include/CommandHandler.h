@@ -10,6 +10,9 @@ class CommandHandler {
 public:
     using CommandFunc = std::function<bool(const uint8_t*, size_t)>;
     
+    // Flag to indicate if a command is currently executing
+    volatile bool isExecuting = false;
+    
     // Регистрация команды
     void registerCommand(uint8_t id, CommandFunc func) {
         commands_[id] = func;
@@ -21,7 +24,10 @@ public:
         auto it = commands_.find(id);
         if (it != commands_.end()) {
             ESP_LOGD("CommandHandler", "Executing command: 0x%02X", id);
-            return it->second(data, len);
+            isExecuting = true;
+            bool result = it->second(data, len);
+            isExecuting = false;
+            return result;
         }
         ESP_LOGW("CommandHandler", "Command not found: 0x%02X", id);
         return false;

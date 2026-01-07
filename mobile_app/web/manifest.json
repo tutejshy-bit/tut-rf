@@ -1,6 +1,6 @@
 {
-    "name": "evilcrow_rf2_controller",
-    "short_name": "evilcrow_rf2_controller",
+    "name": "Tut RF",
+    "short_name": "Tut RF",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

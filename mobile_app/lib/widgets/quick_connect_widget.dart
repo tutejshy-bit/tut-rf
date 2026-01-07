@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../l10n/app_localizations.dart';
 import '../providers/ble_provider.dart';
+import '../theme/app_colors.dart';
 
 class QuickConnectWidget extends StatelessWidget {
   const QuickConnectWidget({super.key});
@@ -9,65 +11,80 @@ class QuickConnectWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     return Consumer<BleProvider>(
       builder: (context, bleProvider, child) {
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Connection Status Header
-            if (bleProvider.isConnected) ...[
-              Row(
-                children: [
-                  Icon(
-                    Icons.bluetooth_connected,
-                    color: Colors.green,
-                    size: 16,
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      'Connected to ${bleProvider.savedDeviceName}',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Colors.green,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                  Text(
-                    bleProvider.savedDeviceId ?? '',
+        final children = <Widget>[];
+        
+        // Connection Status Header
+        if (bleProvider.isConnected) {
+          children.add(
+            Row(
+              children: [
+                Icon(
+                  Icons.bluetooth_connected,
+                  color: AppColors.success,
+                  size: 16,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    AppLocalizations.of(context)!.connected(bleProvider.savedDeviceName),
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.grey[600],
+                      color: AppColors.success,
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
-                  const SizedBox(width: 8),
+                ),
+                Text(
+                  bleProvider.savedDeviceId ?? '',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppColors.secondaryText,
+                  ),
+                ),
+                const SizedBox(width: 8),
                   IconButton(
                     onPressed: () => bleProvider.disconnect(),
                     icon: const Icon(Icons.bluetooth_disabled),
                     iconSize: 20,
-                    tooltip: 'Disconnect',
+                    tooltip: AppLocalizations.of(context)!.disconnect,
                     style: IconButton.styleFrom(
-                      backgroundColor: Colors.red[50],
-                      foregroundColor: Colors.red,
+                      backgroundColor: AppColors.error.withValues(alpha: 0.1),
+                      foregroundColor: AppColors.error,
+                      minimumSize: const Size(40, 40),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
                   ),
-                ],
+              ],
+            ),
+          );
+          children.add(const SizedBox(height: 8));
+        }
+        
+        // Status Message (only show when not connected)
+        if (!bleProvider.isConnected && bleProvider.statusMessage.isNotEmpty) {
+          children.add(
+            Text(
+              _getLocalizedStatusMessage(context, bleProvider.statusMessage),
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: _getStatusColor(bleProvider.statusMessage),
               ),
-              const SizedBox(height: 8),
-            ],
-            
-            // Status Message (only show when not connected)
-            if (!bleProvider.isConnected) ...[
-              Text(
-                bleProvider.statusMessage,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: _getStatusColor(bleProvider.statusMessage),
-                ),
-              ),
-              const SizedBox(height: 12),
-            ],
-            
-            // Device List (only show when not connected)
-            if (!bleProvider.isConnected)
-              _buildDeviceList(context, bleProvider),
-          ],
+            ),
+          );
+          children.add(const SizedBox(height: 12));
+        }
+        
+        // Device List (only show when not connected)
+        if (!bleProvider.isConnected) {
+          children.add(_buildDeviceList(context, bleProvider));
+        }
+        
+        // Если нет дочерних элементов, возвращаем пустой контейнер с минимальным размером
+        if (children.isEmpty) {
+          return const SizedBox.shrink();
+        }
+        
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: children,
         );
       },
     );
@@ -84,7 +101,7 @@ class QuickConnectWidget extends StatelessWidget {
             height: 20,
             child: CircularProgressIndicator(strokeWidth: 2),
           ),
-          label: const Text('Connecting...'),
+          label: Text(AppLocalizations.of(context)!.connecting),
         ),
       );
     } else if (bleProvider.savedDeviceId != null) {
@@ -95,14 +112,14 @@ class QuickConnectWidget extends StatelessWidget {
             width: double.infinity,
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              border: Border.all(color: Colors.grey[300]!),
-              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppColors.borderDefault),
+              borderRadius: BorderRadius.circular(6),
             ),
             child: Row(
               children: [
                 Icon(
                   Icons.bluetooth_connected,
-                  color: Colors.blue,
+                  color: AppColors.info,
                   size: 20,
                 ),
                 const SizedBox(width: 8),
@@ -119,7 +136,7 @@ class QuickConnectWidget extends StatelessWidget {
                       Text(
                         bleProvider.savedDeviceId!,
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Colors.grey[600],
+                          color: AppColors.secondaryText,
                         ),
                       ),
                     ],
@@ -129,10 +146,11 @@ class QuickConnectWidget extends StatelessWidget {
                   onPressed: _canConnect(bleProvider) ? () => bleProvider.quickConnect() : null,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Theme.of(context).colorScheme.primary,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    foregroundColor: AppColors.primaryBackground,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    minimumSize: const Size(0, 36),
                   ),
-                  child: const Text('Connect'),
+                  child: Text(AppLocalizations.of(context)!.connect),
                 ),
               ],
             ),
@@ -143,7 +161,7 @@ class QuickConnectWidget extends StatelessWidget {
             child: OutlinedButton.icon(
               onPressed: () => bleProvider.startScan(),
               icon: const Icon(Icons.bluetooth_searching),
-              label: const Text('Scan for New Devices'),
+              label: Text(AppLocalizations.of(context)!.scanForNewDevices),
             ),
           ),
         ],
@@ -156,9 +174,9 @@ class QuickConnectWidget extends StatelessWidget {
         return Column(
           children: [
             Text(
-              'Found ${supportedDevices.length} supported device(s):',
+              AppLocalizations.of(context)!.foundSupportedDevicesCount(supportedDevices.length),
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Colors.grey[600],
+                color: AppColors.secondaryText,
               ),
             ),
             const SizedBox(height: 8),
@@ -167,14 +185,14 @@ class QuickConnectWidget extends StatelessWidget {
               margin: const EdgeInsets.only(bottom: 8),
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                border: Border.all(color: Colors.grey[300]!),
-                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppColors.borderDefault),
+                borderRadius: BorderRadius.circular(6),
               ),
               child: Row(
                 children: [
                   Icon(
                     Icons.bluetooth,
-                    color: Colors.blue,
+                    color: AppColors.info,
                     size: 20,
                   ),
                   const SizedBox(width: 8),
@@ -183,7 +201,7 @@ class QuickConnectWidget extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          result.device.name.isNotEmpty ? result.device.name : 'Unknown Device',
+                          result.device.name.isNotEmpty ? result.device.name : AppLocalizations.of(context)!.unknownDevice,
                           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             fontWeight: FontWeight.w500,
                           ),
@@ -191,7 +209,7 @@ class QuickConnectWidget extends StatelessWidget {
                         Text(
                           result.device.id.toString(),
                           style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Colors.grey[600],
+                            color: AppColors.secondaryText,
                           ),
                         ),
                       ],
@@ -201,10 +219,11 @@ class QuickConnectWidget extends StatelessWidget {
                     onPressed: _canConnect(bleProvider) ? () => _connectToDevice(bleProvider, result.device) : null,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Theme.of(context).colorScheme.primary,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      foregroundColor: AppColors.primaryBackground,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      minimumSize: const Size(0, 36),
                     ),
-                    child: const Text('Connect'),
+                    child: Text(AppLocalizations.of(context)!.connect),
                   ),
                 ],
               ),
@@ -215,7 +234,7 @@ class QuickConnectWidget extends StatelessWidget {
               child: OutlinedButton.icon(
                 onPressed: () => bleProvider.startScan(),
                 icon: const Icon(Icons.refresh),
-                label: const Text('Scan Again'),
+                label: Text(AppLocalizations.of(context)!.scanAgain),
               ),
             ),
           ],
@@ -227,10 +246,10 @@ class QuickConnectWidget extends StatelessWidget {
           child: ElevatedButton.icon(
             onPressed: _canConnect(bleProvider) ? () => bleProvider.startScan() : null,
             icon: const Icon(Icons.bluetooth_searching),
-            label: const Text('Scan for Devices'),
+            label: Text(AppLocalizations.of(context)!.scanForDevices),
             style: ElevatedButton.styleFrom(
               backgroundColor: Theme.of(context).colorScheme.primary,
-              foregroundColor: Colors.white,
+              foregroundColor: AppColors.primaryBackground,
             ),
           ),
         );
@@ -260,10 +279,51 @@ class QuickConnectWidget extends StatelessWidget {
            status.contains('error');
   }
 
+  String _getLocalizedStatusMessage(BuildContext context, String statusKey) {
+    final l10n = AppLocalizations.of(context)!;
+    
+    // Handle keys with parameters (format: "key:value")
+    if (statusKey.contains(':')) {
+      final parts = statusKey.split(':');
+      final key = parts[0];
+      final value = parts.length > 1 ? parts[1] : '';
+      
+      switch (key) {
+        case 'foundSupportedDevices':
+          final count = int.tryParse(value) ?? 0;
+          return l10n.foundSupportedDevices(count);
+        default:
+          return statusKey; // Return as-is if not a known key
+      }
+    }
+    
+    // Handle simple keys without parameters
+    switch (statusKey) {
+      case 'connecting':
+        return l10n.connecting;
+      case 'connectingToKnownDevice':
+        return l10n.connectingToKnownDevice;
+      case 'disconnected':
+        return l10n.disconnected;
+      case 'scanningForDevices':
+        return l10n.scanningForDevices;
+      case 'transmittingSignal':
+        return l10n.transmittingSignal;
+      default:
+        // Если содержит "Transmitting signal...", тоже локализуем
+        if (statusKey.contains('Transmitting signal')) {
+          return l10n.transmittingSignal;
+        }
+        return statusKey; // Return as-is if not a known key
+    }
+  }
+
   Color _getStatusColor(String status) {
-    if (_isPermissionError(status)) return Colors.red;
-    if (status.contains('Connected')) return Colors.green;
-    if (status.contains('Scanning') || status.contains('Connecting')) return Colors.blue;
-    return Colors.grey[600]!;
+    if (_isPermissionError(status)) return AppColors.error;
+    if (status.contains('Connected')) return AppColors.success;
+    if (status.contains('Scanning') || status.contains('Connecting') || 
+        status == 'connecting' || status == 'connectingToKnownDevice' || 
+        status == 'scanningForDevices' || status.startsWith('foundSupportedDevices:')) return AppColors.info;
+    return AppColors.secondaryText;
   }
 }

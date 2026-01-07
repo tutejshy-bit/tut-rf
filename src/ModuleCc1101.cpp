@@ -293,6 +293,16 @@ void ModuleCc1101::sendData(byte *txBuffer, byte size)
     xSemaphoreGive(rwSemaphore);
 }
 
+void ModuleCc1101::sendDataNonBlocking(byte *txBuffer, byte size, int delayMs)
+{
+    xSemaphoreTake(rwSemaphore, portMAX_DELAY);
+    cc1101.setModul(id);
+    // Используем версию SendData с задержкой вместо ожидания GDO0
+    // Это не блокирует выполнение других задач
+    cc1101.SendData(txBuffer, size, delayMs);
+    xSemaphoreGive(rwSemaphore);
+}
+
 byte ModuleCc1101::getRegisterValue(byte address)
 {
     xSemaphoreTake(rwSemaphore, portMAX_DELAY);
@@ -328,4 +338,49 @@ float ModuleCc1101::getFrequency()
     fq = cc1101.getFrequency(); // 0x00 is the start address for configuration registers
     xSemaphoreGive(rwSemaphore);
     return fq;
+}
+
+void ModuleCc1101::setPA(int power)
+{
+    xSemaphoreTake(rwSemaphore, portMAX_DELAY);
+    cc1101.setModul(id);
+    cc1101.setPA(power);
+    xSemaphoreGive(rwSemaphore);
+}
+
+void ModuleCc1101::calibrate()
+{
+    xSemaphoreTake(rwSemaphore, portMAX_DELAY);
+    cc1101.setModul(id);
+    cc1101.calibrate();
+    xSemaphoreGive(rwSemaphore);
+}
+
+bool ModuleCc1101::waitForCalibration(uint32_t timeoutMs)
+{
+    xSemaphoreTake(rwSemaphore, portMAX_DELAY);
+    cc1101.setModul(id);
+    bool result = cc1101.waitForCalibration(timeoutMs);
+    xSemaphoreGive(rwSemaphore);
+    return result;
+}
+
+void ModuleCc1101::enableContinuousTx()
+{
+    xSemaphoreTake(rwSemaphore, portMAX_DELAY);
+    cc1101.setModul(id);
+    // Set PKTLEN to 0 for infinite packet length (continuous transmission)
+    cc1101.SpiWriteReg(CC1101_PKTLEN, 0x00);
+    // Ensure packet format is set correctly for continuous mode
+    // PKTCTRL0: bit 1-0 = 00 (fixed packet length), but with PKTLEN=0 it becomes infinite
+    xSemaphoreGive(rwSemaphore);
+}
+
+void ModuleCc1101::writeToTxFifo(byte *data, byte size)
+{
+    xSemaphoreTake(rwSemaphore, portMAX_DELAY);
+    cc1101.setModul(id);
+    // Write data directly to TX FIFO (burst write)
+    cc1101.SpiWriteBurstReg(CC1101_TXFIFO, data, size);
+    xSemaphoreGive(rwSemaphore);
 }

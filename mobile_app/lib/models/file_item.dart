@@ -30,13 +30,23 @@ class FileItem {
 
   factory FileItem.fromJson(Map<String, dynamic> json) {
     DateTime? dateCreated;
-    if (json['dateCreated'] != null) {
+    
+    // Try 'date' field first (from binary protocol), then 'dateCreated' (legacy)
+    final dateValue = json['date'] ?? json['dateCreated'];
+    if (dateValue != null) {
       try {
-        if (json['dateCreated'] is String) {
-          dateCreated = DateTime.tryParse(json['dateCreated']);
-        } else if (json['dateCreated'] is int) {
+        if (dateValue is String) {
+          // Try parsing as Unix timestamp string first (from binary protocol)
+          final timestamp = int.tryParse(dateValue);
+          if (timestamp != null && timestamp > 0) {
+            dateCreated = DateTime.fromMillisecondsSinceEpoch(timestamp * 1000);
+          } else {
+            // Try parsing as ISO date string
+            dateCreated = DateTime.tryParse(dateValue);
+          }
+        } else if (dateValue is int) {
           // Unix timestamp in seconds
-          dateCreated = DateTime.fromMillisecondsSinceEpoch(json['dateCreated'] * 1000);
+          dateCreated = DateTime.fromMillisecondsSinceEpoch(dateValue * 1000);
         }
       } catch (e) {
         dateCreated = null;

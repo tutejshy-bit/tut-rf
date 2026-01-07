@@ -18,6 +18,18 @@ class DetectedSignal {
   });
 
   factory DetectedSignal.fromJson(Map<String, dynamic> json) {
+    // In binary protocol, isBackgroundScanner comes as string 'false'
+    // Parse it safely - can be bool or String
+    bool isBackgroundScanner = false;
+    if (json['isBackgroundScanner'] != null) {
+      final value = json['isBackgroundScanner'];
+      if (value is bool) {
+        isBackgroundScanner = value;
+      } else if (value is String) {
+        isBackgroundScanner = value.toLowerCase() == 'true';
+      }
+    }
+    
     return DetectedSignal(
       frequency: json['frequency']?.toString() ?? '0',
       modulation: json['modulation']?.toString() ?? 'Unknown',
@@ -25,7 +37,7 @@ class DetectedSignal {
       data: json['data']?.toString() ?? '',
       timestamp: DateTime.now(),
       module: json['module'] ?? 0,
-      isBackgroundScanner: json['isBackgroundScanner'] ?? false,
+      isBackgroundScanner: isBackgroundScanner,
     );
   }
 

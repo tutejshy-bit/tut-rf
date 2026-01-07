@@ -1,0 +1,734 @@
+{
+  "@@locale": "en",
+  "appTitle": "Tut RF",
+  "@appTitle": {
+    "description": "Application title"
+  },
+  
+  "home": "Home",
+  "record": "Record",
+  "files": "Files",
+  "settings": "Settings",
+  
+  "connectionRequired": "Connection Required",
+  "@connectionRequired": {
+    "description": "Dialog title when connection is required"
+  },
+  "connectionRequiredMessage": "Please connect to a device first to access this feature.",
+  "@connectionRequiredMessage": {
+    "description": "Dialog message when connection is required"
+  },
+  "ok": "OK",
+  
+  "permissionError": "Permission Error",
+  "@permissionError": {
+    "description": "Permission error title"
+  },
+  
+  "disconnected": "Disconnected",
+  "connected": "Connected to {deviceName}",
+  "@connected": {
+    "description": "Connection status message",
+    "placeholders": {
+      "deviceName": {
+        "type": "String"
+      }
+    }
+  },
+  "connecting": "Connecting...",
+  "connectingToKnownDevice": "Connecting to known device...",
+  "scanningForDevice": "Scanning for device...",
+  "deviceNotFound": "Device not found. Make sure it's powered on and nearby.",
+  "connectionError": "Connection error: {error}",
+  "@connectionError": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "bluetoothEnabled": "Bluetooth enabled",
+  "bluetoothDisabled": "Bluetooth disabled",
+  "somePermissionsDenied": "Some permissions denied. Bluetooth may not work properly.",
+  "allPermissionsGranted": "All permissions granted. Bluetooth ready.",
+  "bluetoothScanPermissionsNotGranted": "Bluetooth scan permissions not granted",
+  "scanningForDevices": "Scanning for devices...",
+  "foundSupportedDevices": "Found {count} supported device(s). Tap to connect.",
+  "@foundSupportedDevices": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "noSupportedDevicesFound": "No supported devices found. Make sure ESP32 is powered on and nearby.",
+  "scanError": "Scan error: {error}",
+  "@scanError": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "scanStopped": "Scan stopped",
+  "stopScanError": "Stop scan error: {error}",
+  "@stopScanError": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "requiredCharacteristicsNotFound": "Required characteristics not found",
+  "requiredServiceNotFound": "Required service not found",
+  "knownDeviceCleared": "Known device cleared. Next connection will scan for devices.",
+  "notConnected": "Not connected",
+  "sendError": "Send error: {error}",
+  "@sendError": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "commandTimeout": "Command timeout - please try again",
+  "fileListLoadingTimeout": "File list loading timeout - please try again",
+  "transmittingSignal": "Transmitting signal...",
+  "transmissionFailed": "Transmission failed: {error}",
+  "@transmissionFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  
+  "disconnect": "Disconnect",
+  "connect": "Connect",
+  "scanForNewDevices": "Scan for New Devices",
+  "scanForDevices": "Scan for Devices",
+  "scanAgain": "Scan Again",
+  "foundSupportedDevicesCount": "Found {count} supported device(s):",
+  "@foundSupportedDevicesCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "unknownDevice": "Unknown Device",
+  
+  "notConnectedToDevice": "Not connected to device",
+  "connectToDeviceToManageFiles": "Connect to a device to manage files",
+  "refresh": "Refresh",
+  "stopLoading": "Stop Loading",
+  "createDirectory": "Create Directory",
+  "uploadFile": "Upload File",
+  "exitMultiSelect": "Exit Multi-Select",
+  "multiSelect": "Multi-Select",
+  "directoryName": "Directory name",
+  "enterDirectoryName": "Enter directory name",
+  "create": "Create",
+  "cancel": "Cancel",
+  
+  "copyFile": "Copy File",
+  "newFileName": "New file name",
+  "destination": "Destination: {path}",
+  "@destination": {
+    "placeholders": {
+      "path": {
+        "type": "String"
+      }
+    }
+  },
+  "copy": "Copy",
+  
+  "renameDirectory": "Rename Directory",
+  "renameFile": "Rename File",
+  "newDirectoryName": "New directory name",
+  "rename": "Rename",
+  
+  "deleteDirectory": "Delete Directory",
+  "deleteFile": "Delete File",
+  "deleteConfirm": "Are you sure you want to delete \"{name}\"?",
+  "@deleteConfirm": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "delete": "Delete",
+  "deleteFiles": "Delete Files",
+  "deleteFilesConfirm": "Are you sure you want to delete {count} files?",
+  "@deleteFilesConfirm": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "selectedCount": "{count} selected",
+  "@selectedCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "clearSelection": "Clear Selection",
+  "deleteSelected": "Delete Selected",
+  
+  "moveDirectory": "Move Directory",
+  "moveFile": "Move File",
+  "move": "Move",
+  
+  "records": "Records",
+  "signals": "Signals",
+  "captured": "Captured",
+  "presets": "Presets",
+  "temp": "Temp",
+  
+  "saveFileAs": "Save file as...",
+  "fileSaved": "File saved to: {path}",
+  "@fileSaved": {
+    "placeholders": {
+      "path": {
+        "type": "String"
+      }
+    }
+  },
+  "fileContentCopiedToClipboard": "File content copied to clipboard",
+  "fileSavedToDocuments": "File saved to Documents: {path}",
+  "@fileSavedToDocuments": {
+    "placeholders": {
+      "path": {
+        "type": "String"
+      }
+    }
+  },
+  "couldNotSaveFile": "Could not save file. Content copied to clipboard. Error: {error}",
+  "@couldNotSaveFile": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "downloadFailed": "Download failed: {error}",
+  "@downloadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "downloadFailedNoContent": "Download failed: No content received",
+  "fileCopied": "File copied: {name}",
+  "@fileCopied": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "copyFailed": "Copy failed: {error}",
+  "@copyFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "directoryRenamed": "Directory renamed to: {name}",
+  "@directoryRenamed": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "fileRenamed": "File renamed to: {name}",
+  "@fileRenamed": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "renameFailed": "Rename failed: {error}",
+  "@renameFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "directoryDeleted": "Directory deleted: {name}",
+  "@directoryDeleted": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "fileDeleted": "File deleted: {name}",
+  "@fileDeleted": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "deleteFailed": "Delete failed: {error}",
+  "@deleteFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "deletedFilesCount": "Deleted {count} files{extra}",
+  "@deletedFilesCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "extra": {
+        "type": "String"
+      }
+    }
+  },
+  "failed": "failed",
+  "directoryMoved": "Directory moved: {name}",
+  "@directoryMoved": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "fileMoved": "File moved: {name}",
+  "@fileMoved": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "moveFailed": "Move failed: {error}",
+  "@moveFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "directoryCreated": "Directory created: {name}",
+  "@directoryCreated": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "failedToCreateDirectory": "Failed to create directory: {error}",
+  "@failedToCreateDirectory": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "uploadingFile": "Uploading {fileName}...",
+  "@uploadingFile": {
+    "placeholders": {
+      "fileName": {
+        "type": "String"
+      }
+    }
+  },
+  "fileUploaded": "File uploaded: {fileName}",
+  "@fileUploaded": {
+    "placeholders": {
+      "fileName": {
+        "type": "String"
+      }
+    }
+  },
+  "uploadFailed": "Upload failed: {error}",
+  "@uploadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "selectedFileDoesNotExist": "Selected file does not exist",
+  "uploadError": "Upload Error",
+  "failedToPickFile": "Failed to pick file: {error}",
+  "@failedToPickFile": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  
+  "noLogsYet": "No logs yet",
+  "commandsAndResponsesWillAppearHere": "Commands and responses will appear here",
+  "logsCount": "Logs ({count})",
+  "@logsCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "clearAllLogs": "Clear all logs",
+  
+  "loadingFilePreview": "Loading file preview...",
+  "previewError": "Preview Error",
+  "retry": "Retry",
+  "chars": "{count} chars",
+  "@chars": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "previewTruncated": "Preview truncated. Open file to see full content.",
+  
+  "clearFileCache": "Clear File Cache",
+  "requestPermissions": "Request Permissions",
+  
+  "sendCommand": "Send Command",
+  "enterCommand": "Enter Command",
+  "commandHint": "e.g., SCAN, RECORD, PLAY",
+  "send": "Send",
+  
+  "scanner": "Scanner",
+  "clearList": "Clear list",
+  "stop": "Stop",
+  "start": "Start",
+  
+  "language": "Language",
+  "selectLanguage": "Select Language",
+  "english": "English",
+  "russian": "Russian",
+  "systemDefault": "System Default",
+  
+  "deviceStatus": "Device Status",
+  "subGhzModule": "Sub-GHz Module {number}",
+  "@subGhzModule": {
+    "placeholders": {
+      "number": {
+        "type": "int"
+      }
+    }
+  },
+  "connectedToDevice": "Connected: {deviceName}",
+  "@connectedToDevice": {
+    "placeholders": {
+      "deviceName": {
+        "type": "String"
+      }
+    }
+  },
+  "notConnected": "Not connected",
+  "sdCardReady": "SD Card ready",
+  "freeHeap": "Free Heap: {kb} KB",
+  "@freeHeap": {
+    "placeholders": {
+      "kb": {
+        "type": "String"
+      }
+    }
+  },
+  "notifications": "Notifications",
+  "noNotifications": "No notifications",
+  "clearAll": "Clear All",
+  "justNow": "Just now",
+  "minutesAgo": "m ago",
+  "hoursAgo": "h ago",
+  "daysAgo": "d ago",
+  "frequency": "Frequency",
+  "modulation": "Modulation",
+  "dataRate": "Data Rate",
+  "bandwidth": "Bandwidth",
+  "deviation": "Deviation",
+  "rxBandwidth": "RX Bandwidth",
+  "protocol": "Protocol",
+  "preset": "Preset",
+  "signalName": "Signal Name",
+  "settingsParseError": "Settings Parse Error",
+  "unknown": "Unknown",
+  "idle": "Idle",
+  "detecting": "Detecting",
+  "recording": "Recording",
+  "jamming": "Jamming",
+  "jammingSettings": "Jamming Settings",
+  "transmitting": "Transmitting",
+  "scanning": "Scanning",
+  
+  "statusIdle": "Idle",
+  "statusRecording": "Recording",
+  "statusScanning": "Scanning",
+  "statusTransmitting": "Transmitting",
+  
+  "kbps": "kbps",
+  "hz": "Hz",
+  
+  "modulationAskOok": "ASK/OOK",
+  "modulation2Fsk": "2-FSK",
+  "modulation4Fsk": "4-FSK",
+  "modulationGfsk": "GFSK",
+  "modulationMsk": "MSK",
+  
+  "startRecordingToCaptureSignals": "Start recording to capture signals",
+  "frequencySearchStoppedForModule": "Frequency search stopped for Module {number}",
+  "@frequencySearchStoppedForModule": {
+    "placeholders": {
+      "number": {
+        "type": "int"
+      }
+    }
+  },
+  
+  "error": "Error",
+  "deviceNotConnected": "Device not connected",
+  "moduleBusy": "Module Busy",
+  "moduleBusyMessage": "Module {number} is currently in \"{mode}\" mode.\\nWait for the current operation to complete or switch the module to Idle mode.",
+  "@moduleBusyMessage": {
+    "placeholders": {
+      "number": {
+        "type": "int"
+      },
+      "mode": {
+        "type": "String"
+      }
+    }
+  },
+  "validationError": "Validation Error",
+  "recordingStarted": "Recording started on module {number}",
+  "@recordingStarted": {
+    "placeholders": {
+      "number": {
+        "type": "int"
+      }
+    }
+  },
+  "recordingError": "Recording Error",
+  "recordingStartFailed": "Failed to start recording: {error}",
+  "@recordingStartFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "recordingStopped": "Recording stopped on module {number}",
+  "@recordingStopped": {
+    "placeholders": {
+      "number": {
+        "type": "int"
+      }
+    }
+  },
+  "recordingStopFailed": "Failed to stop recording: {error}",
+  "@recordingStopFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "module": "Module {number}",
+  "@module": {
+    "placeholders": {
+      "number": {
+        "type": "int"
+      }
+    }
+  },
+  "startRecording": "Start Recording",
+  "stopRecording": "Stop Recording",
+  "moduleBusy": "Module Busy",
+  "advanced": "Advanced",
+  "startJamming": "Start Jamming",
+  "stopJamming": "Stop Jamming",
+  "jammingStarted": "Jamming started on Module {module}",
+  "@jammingStarted": {
+    "placeholders": {
+      "module": {
+        "type": "int"
+      }
+    }
+  },
+  "jammingStopped": "Jamming stopped on Module {module}",
+  "@jammingStopped": {
+    "placeholders": {
+      "module": {
+        "type": "int"
+      }
+    }
+  },
+  "jammingError": "Jamming Error",
+  "jammingStartFailed": "Failed to start jamming: {error}",
+  "@jammingStartFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "jammingStopFailed": "Failed to stop jamming: {error}",
+  "@jammingStopFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "stopFrequencySearch": "Stop frequency search",
+  "searchForFrequency": "Search for frequency",
+  "signalsCaptured": "Module {number} Signals Captured ({count})",
+  "@signalsRecorded": {
+    "placeholders": {
+      "number": {
+        "type": "int"
+      },
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "recordedFiles": "Recorded Files",
+  "saveSignal": "Save Signal",
+  "enterSignalName": "Enter a name for the signal:",
+  "deleteSignal": "Delete Signal",
+  "deleteSignalConfirm": "Are you sure you want to delete \"{filename}\"?\\n\\nThis action cannot be undone.",
+  "@deleteSignalConfirm": {
+    "placeholders": {
+      "filename": {
+        "type": "String"
+      }
+    }
+  },
+  "recordScreenHelp": "Record Screen Help",
+  
+  "fileDownloadedSuccessfully": "File \"{fileName}\" downloaded successfully",
+  "@fileDownloadedSuccessfully": {
+    "placeholders": {
+      "fileName": {
+        "type": "String"
+      }
+    }
+  },
+  "imagePreviewNotSupported": "Image preview not supported yet",
+  "viewAsText": "View as Text",
+  "failedToParseFile": "Failed to parse file",
+  "signalParameters": "Signal Parameters",
+  "signalData": "Signal Data",
+  "samplesCount": "Samples Count",
+  "rawData": "Raw Data:",
+  "binaryData": "Binary Data:",
+  "warnings": "Warnings",
+  "noContentAvailable": "No content available",
+  "copyToClipboard": "Copy to Clipboard",
+  "downloadFile": "Download File",
+  "transmitSignal": "Transmit Signal",
+  "reload": "Reload",
+  "parsed": "Parsed",
+  "raw": "Raw",
+  "loadingFile": "Loading file...",
+  "notConnectedToDeviceFile": "Not connected to device",
+  "connectToDeviceToViewFiles": "Connect to a device to view files",
+  
+  "transmitSignal": "Transmit Signal",
+  "transmitSignalConfirm": "This will transmit the signal from this file.",
+  "file": "File",
+  "transmitWarning": "Only use in controlled environments. Check local regulations.",
+  "dontShowAgain": "Don't show this again",
+  "resetTransmitConfirmation": "Reset Transmit Confirmation",
+  "transmitConfirmationReset": "Transmit confirmation dialog has been reset.",
+  "transmit": "Transmit",
+  "signalTransmissionStarted": "Signal transmission started: {fileName}",
+  "@signalTransmissionStarted": {
+    "placeholders": {
+      "fileName": {
+        "type": "String"
+      }
+    }
+  },
+  "transmissionError": "Transmission error: {error}",
+  "@transmissionError": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "view": "View",
+  "save": "Save",
+  "send": "Send",
+  "loadingFiles": "Loading files...",
+  "noRecordedFiles": "No recorded files",
+  "noFilesFound": "No files found",
+  
+  "recordSettings": "Record Settings",
+  "mhz": "MHz",
+  "khz": "kHz",
+  "kbaud": "kBaud",
+  "bandwidth": "Bandwidth",
+  
+  "signalSavedAs": "Signal saved as: {fileName}",
+  "@signalSavedAs": {
+    "placeholders": {
+      "fileName": {
+        "type": "String"
+      }
+    }
+  },
+  "transmittingFile": "Transmitting file: {fileName}",
+  "@transmittingFile": {
+    "placeholders": {
+      "fileName": {
+        "type": "String"
+      }
+    }
+  },
+  
+  "recordingShort": "Recording",
+  "freqShort": "Freq",
+  "modShort": "Mod",
+  "rateShort": "Rate",
+  "bwShort": "BW",
+  
+  "clearDeviceCache": "Clear Device Cache",
+  "clearDeviceCacheDescription": "Remove saved device information",
+  
+  "filesLoadedCount": "Files loaded: {loaded} of {total}",
+  "@filesLoadedCount": {
+    "placeholders": {
+      "loaded": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "filesInDirectory": "Files in directory: {count}",
+  "@filesInDirectory": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "noFiles": "No files",
+  "loadingFiles": "Loading..."
+}
+

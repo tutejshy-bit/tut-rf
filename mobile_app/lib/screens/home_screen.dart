@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../l10n/app_localizations.dart';
 import '../providers/ble_provider.dart';
 import '../providers/log_provider.dart';
 import '../widgets/quick_connect_widget.dart';
 import '../widgets/module_status_widget.dart';
 import '../widgets/status_bar_widget.dart';
+import '../theme/app_colors.dart';
 import 'files_screen.dart';
-import 'debug_screen.dart';
+import 'settings_screen.dart';
 import 'record_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -23,7 +25,7 @@ class _HomeScreenState extends State<HomeScreen> {
     const HomeTab(),
     const RecordScreen(),
     const FilesScreen(),
-    const DebugScreen(),
+    const SettingsScreen(),
   ];
 
   @override
@@ -73,15 +75,16 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: SafeArea(
-        child: Column(
+        child: Stack(
           children: [
-            // Status bar (под системным статус-баром, над контентом)
-            const StatusBarWidget(),
-            
-            // Основной контент
-            Expanded(
+            // Основной контент с отступом сверху для тулбара
+            Padding(
+              padding: const EdgeInsets.only(top: 36),
               child: _screens[_currentIndex],
             ),
+            
+            // Status bar overlay (поверх контента)
+            const StatusBarWidget(),
           ],
         ),
       ),
@@ -91,18 +94,26 @@ class _HomeScreenState extends State<HomeScreen> {
         onTap: (index) {
           final bleProvider = Provider.of<BleProvider>(context, listen: false);
           
-          // Only allow Home screen (index 0) if not connected
-          if (!bleProvider.isConnected && index != 0) {
+          // Allow Home (index 0) and Settings (index 3) without connection
+          // Block Record (index 1) and Files (index 2) if not connected
+          if (!bleProvider.isConnected && index != 0 && index != 3) {
             // Show connection required dialog
+            final l10n = AppLocalizations.of(context)!;
             showDialog(
               context: context,
               builder: (context) => AlertDialog(
-                title: const Text('Connection Required'),
-                content: const Text('Please connect to a device first to access this feature.'),
+                title: Text(
+                  l10n.connectionRequired,
+                  style: const TextStyle(color: AppColors.primaryText),
+                ),
+                content: Text(
+                  l10n.connectionRequiredMessage,
+                  style: const TextStyle(color: AppColors.primaryText),
+                ),
                 actions: [
                   TextButton(
                     onPressed: () => Navigator.of(context).pop(),
-                    child: const Text('OK'),
+                    child: Text(l10n.ok),
                   ),
                 ],
               ),
@@ -114,22 +125,22 @@ class _HomeScreenState extends State<HomeScreen> {
             _currentIndex = index;
           });
         },
-        items: const [
+        items: [
           BottomNavigationBarItem(
-            icon: Icon(Icons.home),
-            label: 'Home',
+            icon: const Icon(Icons.home),
+            label: AppLocalizations.of(context)!.home,
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.radio_button_checked),
-            label: 'Record',
+            icon: const Icon(Icons.radio_button_checked),
+            label: AppLocalizations.of(context)!.record,
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.folder),
-            label: 'Files',
+            icon: const Icon(Icons.folder),
+            label: AppLocalizations.of(context)!.files,
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.bug_report),
-            label: 'Debug',
+            icon: const Icon(Icons.settings),
+            label: AppLocalizations.of(context)!.settings,
           ),
         ],
       ),
@@ -152,21 +163,10 @@ class HomeTab extends StatelessWidget {
               // Quick Connect Widget
               const QuickConnectWidget(),
               
-              const SizedBox(height: 12),
-              
-              // Module Status Widget
-              if (bleProvider.isConnected && bleProvider.cc1101Modules != null) ...[
-                ModuleStatusWidget(
-                  cc1101Modules: bleProvider.cc1101Modules!,
-                  deviceInfo: {'freeHeap': bleProvider.freeHeap ?? 0},
-                ),
-                const SizedBox(height: 12),
-              ],
-              
               // Permissions Status (only show if there are errors)
               if (_isPermissionError(bleProvider.statusMessage)) ...[
                 Card(
-                  color: Colors.red,
+                  color: AppColors.error,
                   child: Padding(
                     padding: const EdgeInsets.all(12.0),
                     child: Column(
@@ -176,14 +176,14 @@ class HomeTab extends StatelessWidget {
                           children: [
                             Icon(
                               Icons.error,
-                              color: Colors.white,
+                              color: AppColors.primaryText,
                               size: 20,
                             ),
                             const SizedBox(width: 8),
                             Text(
-                              'Permission Error',
+                              AppLocalizations.of(context)!.permissionError,
                               style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                color: Colors.white,
+                                color: AppColors.primaryText,
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
@@ -191,9 +191,9 @@ class HomeTab extends StatelessWidget {
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          bleProvider.statusMessage,
+                          _getLocalizedStatusMessage(context, bleProvider.statusMessage),
                           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: Colors.white,
+                            color: AppColors.primaryText,
                           ),
                         ),
                       ],
@@ -214,5 +214,44 @@ class HomeTab extends StatelessWidget {
            status.contains('Permission') ||
            status.contains('denied') ||
            status.contains('error');
+  }
+
+  String _getLocalizedStatusMessage(BuildContext context, String statusKey) {
+    final l10n = AppLocalizations.of(context)!;
+    
+    // Handle keys with parameters (format: "key:value")
+    if (statusKey.contains(':')) {
+      final parts = statusKey.split(':');
+      final key = parts[0];
+      final value = parts.length > 1 ? parts[1] : '';
+      
+      switch (key) {
+        case 'foundSupportedDevices':
+          final count = int.tryParse(value) ?? 0;
+          return l10n.foundSupportedDevices(count);
+        default:
+          return statusKey; // Return as-is if not a known key
+      }
+    }
+    
+    // Handle simple keys without parameters
+    switch (statusKey) {
+      case 'connecting':
+        return l10n.connecting;
+      case 'connectingToKnownDevice':
+        return l10n.connectingToKnownDevice;
+      case 'disconnected':
+        return l10n.disconnected;
+      case 'scanningForDevices':
+        return l10n.scanningForDevices;
+      case 'transmittingSignal':
+        return l10n.transmittingSignal;
+      default:
+        // Если содержит "Transmitting signal...", тоже локализуем
+        if (statusKey.contains('Transmitting signal')) {
+          return l10n.transmittingSignal;
+        }
+        return statusKey; // Return as-is if not a known key
+    }
   }
 }

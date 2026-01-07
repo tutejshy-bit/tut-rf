@@ -129,6 +129,8 @@ public:
   void setModulation(byte m);
   void setPA(int p);
   void setMHZ(float mhz);
+  void calibrate();  // Perform calibration (uses current MHz[currentModule] and updates modulation from register)
+  bool waitForCalibration(uint32_t timeoutMs = 100);  // Wait for calibration to complete
   void setChannel(byte chnl);
   void setChsp(float f);
   void setRxBW(float f);

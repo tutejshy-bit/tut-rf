@@ -31,6 +31,9 @@ const int MAX_RETRIES = 5;
 bool bleAdapterStarted = false;
 BleAdapter bleAdapter;
 
+// Device time (Unix timestamp in seconds, updated by time sync task)
+uint32_t deviceTime = 0;
+
 SPIClass sdspi(VSPI);
 
 // REMOVED - old static task buffers (no longer needed with worker architecture)
@@ -38,6 +41,7 @@ SPIClass sdspi(VSPI);
 
 // Forward declarations
 void signalRecordedHandler(bool saved, const std::string& filename);
+void timeSyncTask(void* pvParameters);
 
 // Heap monitoring helper
 void logHeapStats(const char* context) {
@@ -77,29 +81,41 @@ ClientsManager& clients = ClientsManager::getInstance();
 // Handler functions (moved from Actions.cpp)
 void signalRecordedHandler(bool saved, const std::string& filename)
 {
-    // Use stack buffers to avoid temporary string allocations
-    char jsonBuffer[256];
     if (saved) {
-        snprintf(jsonBuffer, sizeof(jsonBuffer), "{\"filename\":\"%s\"}", filename.c_str());
-        clients.enqueueMessage(NotificationType::SignalRecorded, jsonBuffer);
+        BinarySignalRecorded msg;
+        msg.module = 0; // Default
+        msg.filenameLength = (uint8_t)std::min((size_t)255, filename.length());
+        
+        static uint8_t buffer[260];
+        memcpy(buffer, &msg, sizeof(BinarySignalRecorded));
+        memcpy(buffer + sizeof(BinarySignalRecorded), filename.c_str(), msg.filenameLength);
+        
+        clients.notifyAllBinary(NotificationType::SignalRecorded, buffer, sizeof(BinarySignalRecorded) + msg.filenameLength);
     } else {
-        snprintf(jsonBuffer, sizeof(jsonBuffer), "{\"error\":\"Failed to open the file for writing: %s\"}", filename.c_str());
-        clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer);
+        // Send as binary error
+        static uint8_t errBuffer[260];
+        errBuffer[0] = MSG_ERROR;
+        errBuffer[1] = 10; // Error code for record failed
+        std::string errMsg = "Failed to save file: " + filename;
+        uint8_t msgLen = (uint8_t)std::min((size_t)255, errMsg.length());
+        memcpy(errBuffer + 2, errMsg.c_str(), msgLen);
+        clients.notifyAllBinary(NotificationType::FileSystem, errBuffer, 2 + msgLen);
     }
 }
 
 // Adapter for CC1101Worker detected signal callback
 void cc1101WorkerSignalDetectedHandler(const CC1101DetectedSignal& signal)
 {
-    ESP_LOGI("Main", "Signal detected: rssi=%d, freq=%.2f, module=%d, isBackground=%d", 
-             signal.rssi, signal.frequency, signal.module, signal.isBackgroundScanner);
+    ESP_LOGI("Main", "Signal detected: rssi=%d, freq=%.2f, module=%d", 
+             signal.rssi, signal.frequency, signal.module);
     
-    // Format as JSON and send notification
-    char jsonBuffer[128];
-    snprintf(jsonBuffer, sizeof(jsonBuffer), 
-            "{\"module\":\"%d\",\"frequency\":\"%.2f\",\"rssi\":\"%d\",\"isBackgroundScanner\":%s}", 
-            signal.module, signal.frequency, signal.rssi, signal.isBackgroundScanner ? "true" : "false");
-    clients.enqueueMessage(NotificationType::SignalDetected, std::string(jsonBuffer));
+    BinarySignalDetected msg;
+    msg.module = signal.module;
+    msg.frequency = (uint32_t)(signal.frequency * 1000000); // MHz to Hz
+    msg.rssi = signal.rssi;
+    msg.samples = 0;
+    
+    clients.notifyAllBinary(NotificationType::SignalDetected, reinterpret_cast<const uint8_t*>(&msg), sizeof(BinarySignalDetected));
 }
 
 // REMOVED - signalDetectedHandler (Detector functionality moved to CC1101Worker)
@@ -135,11 +151,24 @@ void taskProcessor(void* pvParameters)
                         // Send command to CC1101Worker
                         int repeat = task.repeat ? *task.repeat : 1;
                         if (CC1101Worker::transmit(task.module, *task.filename, repeat, task.pathType)) {
-                            std::string response = "{\"type\":\"SignalSent\", \"data\":{\"file\":\"" + *task.filename + "\", \"module\":" + std::to_string(task.module) + "}}";
-                            clients.enqueueMessage(NotificationType::SignalSent, response);
+                            BinarySignalSent msg;
+                            msg.module = task.module;
+                            msg.filenameLength = (uint8_t)std::min((size_t)255, task.filename->length());
+                            
+                            static uint8_t buffer[260];
+                            memcpy(buffer, &msg, sizeof(BinarySignalSent));
+                            memcpy(buffer + sizeof(BinarySignalSent), task.filename->c_str(), msg.filenameLength);
+                            clients.notifyAllBinary(NotificationType::SignalSent, buffer, sizeof(BinarySignalSent) + msg.filenameLength);
                         } else {
-                            std::string response = "{\"type\":\"SignalSendingError\", \"error\":\"Failed to queue transmission\", \"file\":\"" + *task.filename + "\"}";
-                            clients.enqueueMessage(NotificationType::SignalSendingError, response);
+                            BinarySignalSendError msg;
+                            msg.module = task.module;
+                            msg.errorCode = 1; // Failed to queue
+                            msg.filenameLength = (uint8_t)std::min((size_t)255, task.filename->length());
+                            
+                            static uint8_t buffer[260];
+                            memcpy(buffer, &msg, sizeof(BinarySignalSendError));
+                            memcpy(buffer + sizeof(BinarySignalSendError), task.filename->c_str(), msg.filenameLength);
+                            clients.notifyAllBinary(NotificationType::SignalSendingError, buffer, sizeof(BinarySignalSendError) + msg.filenameLength);
                         }
                     } else {
                         // Raw transmission
@@ -207,10 +236,18 @@ void taskProcessor(void* pvParameters)
                             if (CC1101Worker::startRecord(module, frequency, modulation, deviation, bandwidth, dataRate, preset)) {
                                 ESP_LOGI(TAG, "Recording started on module %d", module);
                             } else {
-                                clients.enqueueMessage(NotificationType::SignalRecordError, "{\"error\":\"Failed to start recording\"}");
+                                static uint8_t errBuffer[2];
+                                errBuffer[0] = MSG_ERROR;
+                                errBuffer[1] = 11; // Error code for record start failed
+                                clients.notifyAllBinary(NotificationType::SignalRecordError, errBuffer, 2);
                             }
                         } else {
-                            clients.enqueueMessage(NotificationType::SignalRecordError, errorMessage);
+                            static uint8_t errBuffer[260];
+                            errBuffer[0] = MSG_ERROR;
+                            errBuffer[1] = 12; // Error code for preset application failed
+                            uint8_t msgLen = (uint8_t)std::min((size_t)255, errorMessage.length());
+                            memcpy(errBuffer + 2, errorMessage.c_str(), msgLen);
+                            clients.notifyAllBinary(NotificationType::SignalRecordError, errBuffer, 2 + msgLen);
                         }
                     }
                 } break;
@@ -254,11 +291,27 @@ void taskProcessor(void* pvParameters)
                     clients.notifyAllBinary(NotificationType::State, reinterpret_cast<const uint8_t*>(&status), sizeof(BinaryStatus));
                 } break;
                 
+                case Device::TaskType::Jam: {
+                    Device::TaskJam& task = item->jamTask;
+                    ESP_LOGI(TAG, "Processing jam task for module %d", task.module);
+                    
+                    const std::vector<uint8_t>* customPatternPtr = task.customPattern ? task.customPattern.get() : nullptr;
+                    
+                    // Send command to CC1101Worker (power is already 0-7, no conversion needed)
+                    if (CC1101Worker::startJam(task.module, task.frequency, task.power, 
+                                               task.patternType, customPatternPtr, 
+                                               task.maxDurationMs, task.cooldownMs)) {
+                        ESP_LOGI(TAG, "Jam started on module %d", task.module);
+                    } else {
+                        ESP_LOGE(TAG, "Failed to start jam on module %d", task.module);
+                    }
+                } break;
+                
                 case Device::TaskType::Idle: {
                     Device::TaskIdle& task = item->idleTask;
                     ESP_LOGI(TAG, "Processing idle task for module %d", task.module);
                     
-                    // Send command to CC1101Worker
+                    // Send command to CC1101Worker (it will handle jamming state internally)
                     if (CC1101Worker::goIdle(task.module)) {
                         ESP_LOGI(TAG, "Module %d set to idle", task.module);
                     } else {
@@ -358,6 +411,10 @@ void setup()
     xTaskCreate(ClientsManager::processMessageQueue, "SendNotifications", 3072, NULL, 1, NULL); // 3KB
     ESP_LOGD(TAG, "SendNotifications task created.");
     
+    // Create time synchronization task (updates deviceTime every second)
+    xTaskCreate(timeSyncTask, "TimeSync", 2048, NULL, 1, NULL); // 2KB
+    ESP_LOGD(TAG, "TimeSync task created.");
+    
     // Initialize BLE adapter instead of WiFi
     bleAdapter.begin();
     bleAdapter.setCommandHandler(&commandHandler);  // Устанавливаем CommandHandler
@@ -372,6 +429,20 @@ void setup()
 
     ESP_LOGD(TAG, "Starting scheduler...");
     vTaskStartScheduler();
+}
+
+// Time synchronization task - updates deviceTime every second
+void timeSyncTask(void* pvParameters) {
+    const TickType_t delay = pdMS_TO_TICKS(1000); // 1 second
+    
+    while (true) {
+        vTaskDelay(delay);
+        
+        // Only increment if time has been set (deviceTime > 0)
+        if (deviceTime > 0) {
+            deviceTime++;
+        }
+    }
 }
 
 void loop()

@@ -10,6 +10,8 @@
 #include "SD.h"
 #include "Arduino.h"
 #include <cstring>  // For strrchr
+#include <vector>   // For std::vector
+#include "ff.h"     // FATFS low-level API for fast directory reading
 
 // Forward declarations
 extern ClientsManager& clients;
@@ -28,8 +30,9 @@ public:
         handler.registerCommand(0x0A, handleCreateDirectory);
         // 0x0D (upload) is handled specially in BleAdapter::handleUploadChunk, not via CommandHandler
         handler.registerCommand(0x0E, handleCopyFile);
+        handler.registerCommand(0x0F, handleMoveFile);
         handler.registerCommand(0x10, handleSaveToSignalsWithName);
-        handler.registerCommand(0x12, handleGetDirectoryTree);
+        handler.registerCommand(0x14, handleGetDirectoryTree); // Changed from 0x12 to avoid conflict with startJam
     }
     
 private:
@@ -103,99 +106,112 @@ private:
         }
     }
     
-    // Рекурсивное построение дерева директорий
-    static bool buildDirectoryTreeRecursive(const char* basePath, JsonBuffer& buffer) {
-        bool firstDir = true;
-        bool hasDirectories = false;
+    // Binary tree builder
+    static void buildDirectoryTreeBinaryRecursive(const char* path, uint8_t* buffer, size_t& offset, uint16_t& count, size_t maxBufferSize = 1024) {
+        // Use FATFS low-level API for O(n) directory traversal
+        char fatfsPath[256];
+        snprintf(fatfsPath, sizeof(fatfsPath), "/sd%s", path);
         
-        // Open directory
-        File dir = SD.open(basePath);
-        if (!dir || !dir.isDirectory()) {
-            if (dir) dir.close();
-            return false;
-        }
-        
-        File entry;
-        while ((entry = dir.openNextFile())) {
-            if (entry.isDirectory()) {
-                hasDirectories = true;
-                
-                // Extract directory name
-                PathBuffer dirNameBuffer;
-                extractFilename(entry.name(), dirNameBuffer);
-                
-                // Escape directory name for JSON
-                PathBuffer escapedNameBuffer;
-                const char* dirName = dirNameBuffer.c_str();
-                size_t dirNameLen = dirNameBuffer.size();
-                for (size_t i = 0; i < dirNameLen; i++) {
-                    if (dirName[i] == '"') {
-                        escapedNameBuffer.append("\\\"");
-                    } else if (dirName[i] == '\\') {
-                        escapedNameBuffer.append("\\\\");
-                    } else {
-                        escapedNameBuffer.append(dirName[i]);
-                    }
-                }
-                
-                // Build full path for this directory
-                static PathBuffer fullPathBuffer;
-                fullPathBuffer.clear();
-                fullPathBuffer.append(basePath);
-                if (basePath[strlen(basePath) - 1] != '/') {
-                    fullPathBuffer.append("/");
-                }
-                fullPathBuffer.append(dirNameBuffer.c_str());
-                
-                // Build relative path (without base path)
-                static PathBuffer relativePathBuffer;
-                relativePathBuffer.clear();
-                relativePathBuffer.append("/");
-                relativePathBuffer.append(dirNameBuffer.c_str());
-                
-                if (!firstDir) {
-                    buffer.append(",");
-                }
-                firstDir = false;
-                
-                // Start directory entry
-                buffer.printf("{\"name\":\"%s\",\"path\":\"%s\",\"directories\":[", 
-                             escapedNameBuffer.c_str(), relativePathBuffer.c_str());
-                
-                // Recursively add subdirectories
-                bool hasSubDirs = buildDirectoryTreeRecursive(fullPathBuffer.c_str(), buffer);
-                
-                // Close directory entry
-                buffer.append("]}");
+        FF_DIR fatDir;
+        FILINFO fno;
+        FRESULT res = f_opendir(&fatDir, fatfsPath);
+        if (res != FR_OK) {
+            // Try without /sd prefix
+            res = f_opendir(&fatDir, path);
+            if (res != FR_OK) {
+                return;
             }
-            entry.close();
         }
         
-        dir.close();
-        return hasDirectories;
+        uint16_t entriesProcessed = 0;
+        while (true) {
+            res = f_readdir(&fatDir, &fno);
+            if (res != FR_OK || fno.fname[0] == 0) {
+                // No more entries
+                break;
+            }
+            
+            // Skip . and ..
+            if (fno.fname[0] == '.' && (fno.fname[1] == '\0' || (fno.fname[1] == '.' && fno.fname[2] == '\0'))) {
+                continue;
+            }
+            
+            // Check if it's a directory
+            bool isDir = (fno.fname[0] != 0 && (fno.fattrib & AM_DIR) != 0);
+            
+            if (isDir) {
+                // Build full path
+                char dirPath[256];
+                if (strcmp(path, "/") == 0) {
+                    snprintf(dirPath, sizeof(dirPath), "/%s", fno.fname);
+                } else {
+                    snprintf(dirPath, sizeof(dirPath), "%s/%s", path, fno.fname);
+                }
+                
+                uint8_t pathLen = (uint8_t)strlen(dirPath);
+                
+                // Check buffer space
+                if (offset + 1 + pathLen >= maxBufferSize) {
+                    // Buffer full, cannot add more
+                    break;
+                }
+                
+                buffer[offset++] = pathLen;
+                memcpy(buffer + offset, dirPath, pathLen);
+                offset += pathLen;
+                count++;
+                
+                // Recurse into subdirectory
+                buildDirectoryTreeBinaryRecursive(dirPath, buffer, offset, count, maxBufferSize);
+            }
+            
+            entriesProcessed++;
+            // Yield every 10 entries to prevent watchdog timeout
+            if (entriesProcessed % 10 == 0) {
+                vTaskDelay(pdMS_TO_TICKS(5));
+            }
+        }
+        
+        f_closedir(&fatDir);
     }
     
 public:
-    // Получение списка файлов
+    // Получение списка файлов - STREAMING BINARY PROTOCOL (no JSON!)
+    // Sends multiple messages for large directories to minimize memory usage.
+    // 
+    // Response format (each message):
+    // [0xA1][pathLen:1][path:pathLen][flags:1][totalFiles:2][fileCount:1][files...]
+    //
+    // flags byte:
+    //   bit 0 (0x01): hasMore - 1=more messages coming, 0=last message
+    //   bit 7 (0x80): error - if set, bits 1-6 contain error code, fileCount=0
+    //
+    // totalFiles: total number of files in directory (for progress calculation)
+    // fileCount: number of files in THIS message (1 byte, max 255)
+    //
+    // For each file:
+    //   [nameLen:1][name:nameLen][fileFlags:1]
+    //   If file (fileFlags & 0x01 == 0):
+    //     [size:4][date:4]  (little-endian)
+    //
+    // Error codes (when flags & 0x80):
+    //   1 = insufficient memory
+    //   2 = failed to create directory
+    //   3 = failed to open directory
+    //   4 = path is not a directory
+    //   5 = unknown error
     static bool handleGetFilesList(const uint8_t* data, size_t len) {
-        // CRITICAL: Prevent concurrent execution - if already processing, ignore new request
+        // CRITICAL: Prevent concurrent execution
         static bool isProcessing = false;
         if (isProcessing) {
-            ESP_LOGW("FileCommands", "handleGetFilesList already in progress, ignoring duplicate request");
-            return false;  // Return false to indicate request was ignored
+            ESP_LOGW("FileCommands", "handleGetFilesList already in progress");
+            return false;
         }
         
         isProcessing = true;
-        ESP_LOGI("FileCommands", "handleGetFilesList called: len=%d", len);
-        
-        // Use scope guard pattern - ensure cleanup on any return
         bool success = false;
         
-        // Helper function to reset processing flag
-        // Since isProcessing is static, we can't capture it in lambda
-        // Instead, we'll reset it directly at each return point
         if (len < 2) {
-            ESP_LOGW("FileCommands", "Insufficient data for getFilesList");
             isProcessing = false;
             return false;
         }
@@ -204,419 +220,337 @@ public:
         uint8_t pathType = data[1];
         
         if (len < 2 + pathLength) {
+            isProcessing = false;
             return false;
         }
         
-        // Используем вспомогательную функцию для построения пути
+        // Build full path
         const char* path = (pathLength > 0) ? reinterpret_cast<const char*>(data + 2) : nullptr;
         buildFullPath(pathType, path, pathLength, pathBuffer);
         
-        ESP_LOGI("FileCommands", "Path: pathLength=%d, pathType=%d, path='%.*s', final='%s'", 
-                 pathLength, pathType, pathLength, (path ? path : ""), pathBuffer.c_str());
-        
-        // Проверка памяти
+        // Check memory
         if (ESP.getFreeHeap() < 3000) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"list\",\"error\":\"Insufficient memory\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileListError(1);
             isProcessing = false;
             return true;
         }
         
         try {
-            // STREAMING VERSION: Read files one by one and send in chunks
-            // Open directory once and keep it open until all files are read
-            ESP_LOGI("FileCommands", "Attempting to open directory: '%s'", pathBuffer.c_str());
-            
-            // Ensure directory exists - create if it doesn't
-            // Remove trailing '/' for exists/mkdir checks (SD library may require this)
+            // Prepare directory path without trailing slash
             static PathBuffer dirPathWithoutSlash;
             dirPathWithoutSlash.clear();
             const char* pathStr = pathBuffer.c_str();
             size_t pathStrLen = strlen(pathStr);
             if (pathStrLen > 0 && pathStr[pathStrLen - 1] == '/') {
-                dirPathWithoutSlash.append(pathStr, pathStrLen - 1);  // Remove trailing '/'
+                dirPathWithoutSlash.append(pathStr, pathStrLen - 1);
             } else {
                 dirPathWithoutSlash.append(pathStr, pathStrLen);
             }
             
+            // Create directory if it doesn't exist
             if (!SD.exists(dirPathWithoutSlash.c_str())) {
-                ESP_LOGI("FileCommands", "Directory does not exist, creating: '%s'", dirPathWithoutSlash.c_str());
-                
-                // Create all parent directories in order
-                // For "/DATA/RECORDS", we need to create "/DATA" first, then "/DATA/RECORDS"
                 const char* dirPathStr = dirPathWithoutSlash.c_str();
                 size_t dirPathLen = strlen(dirPathStr);
-                
-                // Build parent directories step by step
                 static PathBuffer currentPath;
                 
-                // Skip leading '/' and process each segment
-                for (size_t i = 1; i < dirPathLen; i++) {  // Start from 1 to skip leading '/'
+                for (size_t i = 1; i < dirPathLen; i++) {
                     if (dirPathStr[i] == '/') {
-                        // Found a segment boundary
                         currentPath.clear();
-                        currentPath.append(dirPathStr, i);  // Include the '/'
-                        
-                        // Check without trailing slash
+                        currentPath.append(dirPathStr, i);
                         if (!SD.exists(currentPath.c_str())) {
-                            ESP_LOGI("FileCommands", "Creating parent directory: '%s'", currentPath.c_str());
-                            if (!SD.mkdir(currentPath.c_str())) {
-                                ESP_LOGW("FileCommands", "Failed to create parent directory: '%s' (may already exist)", currentPath.c_str());
-                            } else {
-                                ESP_LOGI("FileCommands", "Parent directory created: '%s'", currentPath.c_str());
-                            }
+                            SD.mkdir(currentPath.c_str());
                         }
                     }
                 }
                 
-                // Create the target directory (without trailing '/')
                 if (!SD.mkdir(dirPathWithoutSlash.c_str())) {
-                    ESP_LOGE("FileCommands", "Failed to create directory: '%s'", dirPathWithoutSlash.c_str());
-                    jsonBuffer.clear();
-                    jsonBuffer.printf("{\"action\":\"list\",\"error\":\"Failed to create directory: %s\",\"files\":[]}", pathBuffer.c_str());
-                    clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
-                    isProcessing = false;
-                    return true;
-                }
-                ESP_LOGI("FileCommands", "Directory created successfully: '%s'", dirPathWithoutSlash.c_str());
-            }
-            
-            // Try opening directory without trailing slash (SD library may require this)
-            // Use dirPathWithoutSlash which we already prepared above
-            ESP_LOGI("FileCommands", "Opening directory (without trailing slash): '%s'", dirPathWithoutSlash.c_str());
-            File dir = SD.open(dirPathWithoutSlash.c_str());
-            if (!dir) {
-                ESP_LOGE("FileCommands", "Failed to open directory: '%s' (SD card may not be mounted or path incorrect)", dirPathWithoutSlash.c_str());
-                // Try with trailing slash as fallback
-                ESP_LOGI("FileCommands", "Trying with trailing slash: '%s'", pathBuffer.c_str());
-                dir = SD.open(pathBuffer.c_str());
-                if (!dir) {
-                    ESP_LOGE("FileCommands", "Failed to open directory with trailing slash too");
-                    // Check if SD card is mounted
-                    if (!SD.begin()) {
-                        ESP_LOGE("FileCommands", "SD card not mounted!");
-                    }
-                    jsonBuffer.clear();
-                    jsonBuffer.printf("{\"action\":\"list\",\"error\":\"Failed to open directory: %s\",\"files\":[]}", pathBuffer.c_str());
-                    clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+                    sendBinaryFileListError(2);
                     isProcessing = false;
                     return true;
                 }
             }
             
-            if (!dir.isDirectory()) {
-                ESP_LOGE("FileCommands", "Path is not a directory: '%s'", dirPathWithoutSlash.c_str());
-                dir.close();
-                jsonBuffer.clear();
-                jsonBuffer.printf("{\"action\":\"list\",\"error\":\"Path is not a directory\",\"files\":[]}");
-                clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
-                isProcessing = false;
-                return true;
-            }
+            // Use FATFS directly for O(n) directory reading instead of O(n²)
+            // Arduino's openNextFile() rescans from beginning each time
+            uint32_t streamStartTime = millis();
             
-            ESP_LOGI("FileCommands", "Directory opened successfully: '%s'", dirPathWithoutSlash.c_str());
-            
-            // Build binary header: [0xA1][pathLen:1][path]
-            size_t pathLen = strlen(pathBuffer.c_str());
-            const size_t MAX_HEADER_SIZE = 256;
-            uint8_t header[MAX_HEADER_SIZE];
-            
-            if (1 + 1 + pathLen > MAX_HEADER_SIZE) {
-                ESP_LOGE("FileCommands", "Path too long for file list: %zu", pathLen);
-                dir.close();
-                jsonBuffer.clear();
-                jsonBuffer.printf("{\"action\":\"list\",\"error\":\"Path too long\"}");
-                clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
-                isProcessing = false;
-                return true;
-            }
-            
-            size_t offset = 0;
-            header[offset++] = MSG_FILE_LIST;  // Binary file list message type
-            header[offset++] = (uint8_t)pathLen;
-            memcpy(header + offset, pathBuffer.c_str(), pathLen);
-            offset += pathLen;
-            size_t headerSize = offset;
-            
-            // Start building JSON in streaming mode
-            // Use a static buffer to accumulate JSON until it reaches a certain size, then send
-            const size_t CHUNK_SEND_SIZE = 800;  // Increased back to 800 bytes for better performance
-            static ChunkBuffer chunkBuffer;  // Static buffer for accumulating JSON chunks (NO HEAP!)
-            chunkBuffer.clear();
-            
-            // Start JSON: {"action":"list","files":[
-            chunkBuffer.clear();
-            if (!chunkBuffer.append("{\"action\":\"list\",\"files\":[")) {
-                ESP_LOGE("FileCommands", "Failed to initialize chunk buffer");
-                dir.close();
-                jsonBuffer.clear();
-                jsonBuffer.printf("{\"action\":\"list\",\"error\":\"Buffer initialization failed\",\"files\":[]}");
-                clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
-                isProcessing = false;
-                return true;
-            }
-            
-            bool firstFile = true;
-            int fileCount = 0;
-            const int MAX_FILES = 1000;  // Reasonable limit
-            bool bufferOverflow = false;  // Track if we hit buffer overflow
-            
-            // Reserve space for file entry (estimate: max ~200 bytes for long filename + JSON structure)
-            const size_t FILE_ENTRY_RESERVE = 250;
-            
-            // Helper function to send current chunk
-            auto sendCurrentChunk = [&]() -> bool {
-                if (chunkBuffer.empty()) {
-                    return true;  // Nothing to send
-                }
-                
-                static uint8_t sharedMessageBuffer[256 + 800];
-                if (headerSize + chunkBuffer.size() > sizeof(sharedMessageBuffer)) {
-                    ESP_LOGE("FileCommands", "Message too large for static buffer");
-                    bufferOverflow = true;
-                    return false;
-                }
-                
-                memcpy(sharedMessageBuffer, header, headerSize);
-                memcpy(sharedMessageBuffer + headerSize, chunkBuffer.c_str(), chunkBuffer.size());
-                
-                clients.notifyAllBinary(NotificationType::FileSystem, 
-                                      sharedMessageBuffer, 
-                                      headerSize + chunkBuffer.size());
-                
-                chunkBuffer.clear();
-                firstFile = true;  // Reset for next chunk
-                return true;
-            };
-            
-            File entry;
-            while ((entry = dir.openNextFile()) && fileCount < MAX_FILES) {
-                // Check memory periodically
-                if (ESP.getFreeHeap() < 3000) {
-                    ESP_LOGW("FileCommands", "Low memory at file %d, stopping", fileCount);
-                    entry.close();
-                    bufferOverflow = true;
-                    break;
-                }
-                
-                // Extract filename BEFORE checking buffer size (we need it for size estimation)
-                PathBuffer filenameBuffer;
-                extractFilename(entry.name(), filenameBuffer);
-                
-                // Escape filename for JSON
-                PathBuffer escapedNameBuffer;
-                const char* filename = filenameBuffer.c_str();
-                size_t filenameLen = filenameBuffer.size();
-                for (size_t i = 0; i < filenameLen; i++) {
-                    if (filename[i] == '"') {
-                        escapedNameBuffer.append("\\\"");
-                    } else if (filename[i] == '\\') {
-                        escapedNameBuffer.append("\\\\");
-                    } else {
-                        escapedNameBuffer.append(filename[i]);
-                    }
-                }
-                
-                // Estimate JSON entry size: base structure + escaped filename + size/date (for files)
-                // Format: {"name":"...","size":123,"date":456,"type":"file"} or {"name":"...","type":"directory"}
-                size_t estimatedEntrySize = 50;  // Base JSON structure
-                estimatedEntrySize += escapedNameBuffer.size();  // Escaped filename
-                if (!entry.isDirectory()) {
-                    estimatedEntrySize += 30;  // Size and date fields
-                }
-                
-                // Check if we need to send current chunk BEFORE adding new file
-                // Send if buffer is close to full or if adding this file would overflow
-                size_t currentSize = chunkBuffer.size();
-                size_t freeSpace = chunkBuffer.capacity() - currentSize;
-                
-                // Need space for: comma (if not first) + estimated entry size
-                size_t neededSpace = (firstFile ? 0 : 1) + estimatedEntrySize;
-                
-                if (freeSpace < neededSpace || currentSize >= CHUNK_SEND_SIZE) {
-                    // Not enough space or already at send threshold - send current chunk first
-                    if (!sendCurrentChunk()) {
-                        entry.close();
-                        break;  // Failed to send, stop processing
-                    }
-                }
-                
-                // Now we have space - add comma if not first file
-                if (!firstFile) {
-                    if (!chunkBuffer.append(",")) {
-                        // This should not happen after our check, but handle it anyway
-                        ESP_LOGE("FileCommands", "Unexpected: failed to append comma after buffer check");
-                        entry.close();
-                        break;
-                    }
-                }
-                
-                // Build file JSON entry - this should succeed now
-                bool appendSuccess = false;
-                if (!entry.isDirectory()) {
-                    appendSuccess = chunkBuffer.printf("{\"name\":\"%s\",\"size\":%zu,\"date\":\"%lu\",\"type\":\"file\"}",
-                                                      escapedNameBuffer.c_str(), entry.size(), entry.getLastWrite());
-                } else {
-                    appendSuccess = chunkBuffer.printf("{\"name\":\"%s\",\"type\":\"directory\"}", 
-                                                      escapedNameBuffer.c_str());
-                }
-                
-                if (!appendSuccess) {
-                    // This should be rare now, but handle it
-                    ESP_LOGE("FileCommands", "Unexpected: failed to append file after buffer check");
-                    // Try to send current chunk and retry
-                    if (!sendCurrentChunk()) {
-                        entry.close();
-                        break;
-                    }
-                    // Retry appending this file
-                    if (!entry.isDirectory()) {
-                        appendSuccess = chunkBuffer.printf("{\"name\":\"%s\",\"size\":%zu,\"date\":\"%lu\",\"type\":\"file\"}",
-                                                         escapedNameBuffer.c_str(), entry.size(), entry.getLastWrite());
-                    } else {
-                        appendSuccess = chunkBuffer.printf("{\"name\":\"%s\",\"type\":\"directory\"}", 
-                                                          escapedNameBuffer.c_str());
-                    }
-                    if (!appendSuccess) {
-                        ESP_LOGE("FileCommands", "Failed to append file even after sending chunk - file entry too large");
-                        entry.close();
-                        bufferOverflow = true;
-                        break;
-                    }
-                }
-                
-                firstFile = false;
-                fileCount++;
-                entry.close();
-                
-                // Check if we should send chunk after adding this file
-                if (chunkBuffer.size() >= CHUNK_SEND_SIZE) {
-                    if (!sendCurrentChunk()) {
-                        break;  // Failed to send, stop processing
-                    }
-                }
-            }
-            
-            // Close directory
-            dir.close();
-            
-            // Handle empty directory case
-            if (fileCount == 0) {
-                // Send empty list immediately
-                        jsonBuffer.clear();
-                jsonBuffer.printf("{\"action\":\"list\",\"files\":[]}");
-                
-                // Use shared static buffer
-                static uint8_t sharedMessageBuffer[256 + 800];  // Shared buffer for all message sending
-                if (headerSize + jsonBuffer.size() > sizeof(sharedMessageBuffer)) {
-                    ESP_LOGE("FileCommands", "Empty message too large");
-                    return true;
-                }
-                
-                memcpy(sharedMessageBuffer, header, headerSize);
-                memcpy(sharedMessageBuffer + headerSize, jsonBuffer.c_str(), jsonBuffer.size());
-                
-                clients.notifyAllBinary(NotificationType::FileSystem, 
-                                      sharedMessageBuffer, 
-                                      headerSize + jsonBuffer.size());
-                success = true;
-                isProcessing = false;
-                return true;
-            }
-            
-            // Close JSON array and send final chunk
-            // CRITICAL: Always ensure JSON is properly closed, even if we hit buffer overflow
-            if (bufferOverflow && chunkBuffer.empty()) {
-                // If buffer overflow and chunkBuffer is empty, we need to send closing brackets separately
-                chunkBuffer.clear();
-                chunkBuffer.append("]}");
+            // Build FATFS path (needs /sd prefix for ESP32)
+            char fatfsPath[270];
+            if (dirPathWithoutSlash.size() > 0) {
+                snprintf(fatfsPath, sizeof(fatfsPath), "/sd%s", dirPathWithoutSlash.c_str());
             } else {
-                // Try to append closing brackets, send separately if fails
-                if (!chunkBuffer.append("]}")) {
-                    ESP_LOGW("FileCommands", "Failed to append closing bracket, will send separately");
-                    // Send current buffer first if not empty
-                    if (!chunkBuffer.empty()) {
-                        static uint8_t sharedMessageBuffer[256 + 800];
-                        if (headerSize + chunkBuffer.size() <= sizeof(sharedMessageBuffer)) {
-                            memcpy(sharedMessageBuffer, header, headerSize);
-                            memcpy(sharedMessageBuffer + headerSize, chunkBuffer.c_str(), chunkBuffer.size());
-                            clients.notifyAllBinary(NotificationType::FileSystem, 
-                                                  sharedMessageBuffer, 
-                                                  headerSize + chunkBuffer.size());
+                snprintf(fatfsPath, sizeof(fatfsPath), "/sd%s", pathBuffer.c_str());
+            }
+            
+            FF_DIR fatDir;
+            FILINFO fno;
+            FRESULT res = f_opendir(&fatDir, fatfsPath);
+            if (res != FR_OK) {
+                // Try without /sd prefix
+                res = f_opendir(&fatDir, dirPathWithoutSlash.c_str());
+                if (res != FR_OK) {
+                    sendBinaryFileListError(3);
+                    isProcessing = false;
+                    return true;
+                }
+            }
+            
+            // STREAMING: Use buffer that fits in single BLE chunk (MAX_CHUNK_SIZE = 500)
+            // BLE notify limit is 509 bytes, so 500 bytes data + 7 header + 1 checksum = 508 bytes total
+            const size_t BUFFER_SIZE = 500;
+            const size_t MAX_FILES_PER_MESSAGE = 50;  // More files per message since reading is faster now
+            static uint8_t binaryBuffer[BUFFER_SIZE];
+            
+            size_t pathLen = strlen(pathBuffer.c_str());
+            
+            uint16_t totalFilesSent = 0;
+            bool hasMoreFiles = true;
+            bool lowMemory = false;
+            uint8_t messagesSent = 0;
+            
+            // Pending file info (when buffer is full, save file for next iteration)
+            static char pendingFilename[256];
+            static bool hasPendingFile = false;
+            static bool pendingIsDir = false;
+            static uint32_t pendingFileSize = 0;
+            static uint32_t pendingFileDate = 0;
+            
+            hasPendingFile = false;
+            
+            while (hasMoreFiles && !lowMemory) {
+                uint32_t msgStartTime = millis();
+                
+                // Build message header
+                size_t bufferOffset = 0;
+                binaryBuffer[bufferOffset++] = MSG_FILE_LIST;  // 0xA1
+                binaryBuffer[bufferOffset++] = (uint8_t)pathLen;
+                memcpy(binaryBuffer + bufferOffset, pathBuffer.c_str(), pathLen);
+                bufferOffset += pathLen;
+                
+                size_t flagsOffset = bufferOffset++;
+                size_t totalFilesOffset = bufferOffset;
+                bufferOffset += 2;
+                size_t fileCountOffset = bufferOffset++;
+                
+                uint8_t filesInThisMessage = 0;
+                
+                // First, add pending file from previous iteration
+                if (hasPendingFile) {
+                    uint8_t nameLen = strlen(pendingFilename);
+                    size_t entrySize = 1 + nameLen + 1 + (pendingIsDir ? 0 : 8);
+                    
+                    binaryBuffer[bufferOffset++] = nameLen;
+                    memcpy(binaryBuffer + bufferOffset, pendingFilename, nameLen);
+                    bufferOffset += nameLen;
+                    binaryBuffer[bufferOffset++] = pendingIsDir ? 0x01 : 0x00;
+                    
+                    if (!pendingIsDir) {
+                        binaryBuffer[bufferOffset++] = pendingFileSize & 0xFF;
+                        binaryBuffer[bufferOffset++] = (pendingFileSize >> 8) & 0xFF;
+                        binaryBuffer[bufferOffset++] = (pendingFileSize >> 16) & 0xFF;
+                        binaryBuffer[bufferOffset++] = (pendingFileSize >> 24) & 0xFF;
+                        binaryBuffer[bufferOffset++] = pendingFileDate & 0xFF;
+                        binaryBuffer[bufferOffset++] = (pendingFileDate >> 8) & 0xFF;
+                        binaryBuffer[bufferOffset++] = (pendingFileDate >> 16) & 0xFF;
+                        binaryBuffer[bufferOffset++] = (pendingFileDate >> 24) & 0xFF;
+                    }
+                    
+                    filesInThisMessage++;
+                    totalFilesSent++;
+                    hasPendingFile = false;
+                }
+                
+                // Read directory entries using FATFS - O(n) complexity!
+                while (filesInThisMessage < MAX_FILES_PER_MESSAGE) {
+                    res = f_readdir(&fatDir, &fno);
+                    if (res != FR_OK || fno.fname[0] == 0) {
+                        // No more files
+                        break;
+                    }
+                    
+                    // Skip . and ..
+                    if (fno.fname[0] == '.') continue;
+                    
+                    // Check memory
+                    if (ESP.getFreeHeap() < 2000) {
+                        lowMemory = true;
+                        break;
+                    }
+                    
+                    const char* filename = fno.fname;
+                    uint8_t nameLen = strlen(filename);
+                    if (nameLen > 255) nameLen = 255;
+                    
+                    bool isDir = (fno.fattrib & AM_DIR) != 0;
+                    uint32_t fileSize = isDir ? 0 : fno.fsize;
+                    
+                    // Convert FAT date/time to Unix timestamp
+                    // FAT date: bits 15-9=year-1980, 8-5=month, 4-0=day
+                    // FAT time: bits 15-11=hour, 10-5=minute, 4-0=second/2
+                    uint16_t fatDate = fno.fdate;
+                    uint16_t fatTime = fno.ftime;
+                    
+                    // Manual conversion to Unix timestamp (seconds since 1970)
+                    int year = ((fatDate >> 9) & 0x7F) + 1980;
+                    int month = ((fatDate >> 5) & 0x0F);
+                    int day = fatDate & 0x1F;
+                    int hour = (fatTime >> 11) & 0x1F;
+                    int minute = (fatTime >> 5) & 0x3F;
+                    int second = (fatTime & 0x1F) * 2;
+                    
+                    // Days from 1970 to year
+                    uint32_t days = 0;
+                    for (int y = 1970; y < year; y++) {
+                        days += (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 366 : 365;
+                    }
+                    // Days in current year
+                    static const int monthDays[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+                    if (month >= 1 && month <= 12) {
+                        days += monthDays[month - 1];
+                        // Leap year adjustment
+                        if (month > 2 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))) {
+                            days++;
                         }
                     }
-                    // Now send closing brackets
-                    chunkBuffer.clear();
-                    chunkBuffer.append("]}");
+                    days += (day > 0 ? day - 1 : 0);
+                    
+                    uint32_t fileDate = days * 86400 + hour * 3600 + minute * 60 + second;
+                    
+                    // Calculate entry size
+                    size_t entrySize = 1 + nameLen + 1 + (isDir ? 0 : 8);
+                    
+                    // Check if entry fits in remaining buffer space
+                    if (bufferOffset + entrySize >= BUFFER_SIZE - 16) {
+                        // Buffer full - save this file for next iteration
+                        strncpy(pendingFilename, filename, sizeof(pendingFilename) - 1);
+                        pendingFilename[sizeof(pendingFilename) - 1] = 0;
+                        pendingIsDir = isDir;
+                        pendingFileSize = fileSize;
+                        pendingFileDate = fileDate;
+                        hasPendingFile = true;
+                        break;
+                    }
+                    
+                    // Add file entry to buffer
+                    binaryBuffer[bufferOffset++] = nameLen;
+                    memcpy(binaryBuffer + bufferOffset, filename, nameLen);
+                    bufferOffset += nameLen;
+                    binaryBuffer[bufferOffset++] = isDir ? 0x01 : 0x00;
+                    
+                    if (!isDir) {
+                        binaryBuffer[bufferOffset++] = fileSize & 0xFF;
+                        binaryBuffer[bufferOffset++] = (fileSize >> 8) & 0xFF;
+                        binaryBuffer[bufferOffset++] = (fileSize >> 16) & 0xFF;
+                        binaryBuffer[bufferOffset++] = (fileSize >> 24) & 0xFF;
+                        binaryBuffer[bufferOffset++] = fileDate & 0xFF;
+                        binaryBuffer[bufferOffset++] = (fileDate >> 8) & 0xFF;
+                        binaryBuffer[bufferOffset++] = (fileDate >> 16) & 0xFF;
+                        binaryBuffer[bufferOffset++] = (fileDate >> 24) & 0xFF;
+                    }
+                    
+                    filesInThisMessage++;
+                    totalFilesSent++;
+                    
+                    // Yield every 20 files to prevent watchdog (faster now, so less frequent)
+                    if (filesInThisMessage % 20 == 0) {
+                        vTaskDelay(pdMS_TO_TICKS(1));
+                    }
                 }
-            }
-            
-            // Build final message: header + final JSON chunk
-            // Use shared static buffer to avoid heap allocation
-            static uint8_t sharedMessageBuffer[256 + 800];  // Shared buffer for all message sending
-            
-            if (headerSize + chunkBuffer.size() > sizeof(sharedMessageBuffer)) {
-                ESP_LOGE("FileCommands", "Final message too large for static buffer, trying minimal close");
-                // Try to send just closing brackets in a separate message
-                chunkBuffer.clear();
-                chunkBuffer.append("]}");
-                if (headerSize + chunkBuffer.size() <= sizeof(sharedMessageBuffer)) {
-                    memcpy(sharedMessageBuffer, header, headerSize);
-                    memcpy(sharedMessageBuffer + headerSize, chunkBuffer.c_str(), chunkBuffer.size());
-                    clients.notifyAllBinary(NotificationType::FileSystem, 
-                                          sharedMessageBuffer, 
-                                          headerSize + chunkBuffer.size());
-                    success = true;
+                uint32_t readTime = millis() - msgStartTime;
+                
+                // Check if we read all files (no pending and last f_readdir returned empty)
+                if (!hasPendingFile && (res != FR_OK || fno.fname[0] == 0)) {
+                    hasMoreFiles = false;
+                }
+                
+                // Update flags and fileCount
+                binaryBuffer[flagsOffset] = hasMoreFiles ? 0x01 : 0x00;
+                binaryBuffer[fileCountOffset] = filesInThisMessage;
+                
+                // Set totalFiles: 0xFFFF if more coming, actual count if this is last message
+                if (hasMoreFiles) {
+                    binaryBuffer[totalFilesOffset] = 0xFF;
+                    binaryBuffer[totalFilesOffset + 1] = 0xFF;
                 } else {
-                    ESP_LOGE("FileCommands", "Cannot send closing brackets - buffer too small");
-                    // Send error message as fallback
-                    jsonBuffer.clear();
-                    jsonBuffer.printf("{\"action\":\"list\",\"error\":\"Buffer overflow: too many files\",\"files\":[]}");
-                    clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+                    binaryBuffer[totalFilesOffset] = totalFilesSent & 0xFF;
+                    binaryBuffer[totalFilesOffset + 1] = (totalFilesSent >> 8) & 0xFF;
                 }
-                isProcessing = false;
-                return true;
+                
+                // Send this message
+                if (filesInThisMessage > 0 || !hasMoreFiles) {
+                    clients.notifyAllBinary(NotificationType::FileSystem, binaryBuffer, bufferOffset);
+                    messagesSent++;
+                    
+                    // Log only in debug mode to save resources in production
+                    ESP_LOGD("FileCommands", "Msg %d: %d files, read=%lums", 
+                             messagesSent, filesInThisMessage, readTime);
+                    
+                    // Small delay to allow mobile app to process chunks and update UI
+                    // Reduced from 150ms to 50ms - chunk processing is fast, and we have
+                    // improved chunk buffer cleanup on mobile side. BLE notifications are queued,
+                    // so this prevents overwhelming the receiver while still being responsive
+                    // In production, reduce delay slightly for better performance
+                    vTaskDelay(pdMS_TO_TICKS(30));
+                }
+                
+                // Safety: prevent infinite loop
+                if (filesInThisMessage == 0 && !hasPendingFile) {
+                    hasMoreFiles = false;
+                }
             }
             
-            // Copy header
-            memcpy(sharedMessageBuffer, header, headerSize);
-            // Copy chunk data
-            memcpy(sharedMessageBuffer + headerSize, chunkBuffer.c_str(), chunkBuffer.size());
+            f_closedir(&fatDir);
             
-            if (bufferOverflow) {
-                ESP_LOGW("FileCommands", "Sending partial file list (buffer overflow): path='%s', files=%d, finalChunk=%zu bytes", 
-                         pathBuffer.c_str(), fileCount, headerSize + chunkBuffer.size());
-            } else {
-                ESP_LOGI("FileCommands", "Sending file list (streaming): path='%s', files=%d, finalChunk=%zu bytes", 
-                         pathBuffer.c_str(), fileCount, headerSize + chunkBuffer.size());
-            }
-            
-            // Send final chunk
-            clients.notifyAllBinary(NotificationType::FileSystem, 
-                                  sharedMessageBuffer, 
-                                  headerSize + chunkBuffer.size());
-            
-            if (bufferOverflow) {
-                ESP_LOGW("FileCommands", "File list sent (partial): %d files (max reached), %zu bytes", fileCount, headerSize + chunkBuffer.size());
-            } else {
-                ESP_LOGI("FileCommands", "File list sent successfully: %d files, %zu bytes", fileCount, headerSize + chunkBuffer.size());
-            }
+            uint32_t totalTime = millis() - streamStartTime;
+            // Log only in debug mode to save resources in production
+            ESP_LOGD("FileCommands", "File list complete: %d files, %d msgs, %lu ms total", 
+                     totalFilesSent, messagesSent, totalTime);
             success = true;
             
-        } catch (const std::bad_alloc& e) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"list\",\"error\":\"Out of memory\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
         } catch (...) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"list\",\"error\":\"Unknown error\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileListError(5);
         }
         
-        // CRITICAL: Reset processing flag before returning
         isProcessing = false;
         return success;
+    }
+    
+    // Send binary error response for file list
+    // flags byte has bit 7 set (0x80) plus error code in bits 0-6
+    static void sendBinaryFileListError(uint8_t errorCode) {
+        size_t pathLen = strlen(pathBuffer.c_str());
+        static uint8_t errorBuffer[264];
+        size_t offset = 0;
+        
+        errorBuffer[offset++] = MSG_FILE_LIST;  // 0xA1
+        errorBuffer[offset++] = (uint8_t)pathLen;
+        memcpy(errorBuffer + offset, pathBuffer.c_str(), pathLen);
+        offset += pathLen;
+        errorBuffer[offset++] = 0x80 | (errorCode & 0x7F);  // Error flag + error code
+        errorBuffer[offset++] = 0;  // totalFiles low = 0
+        errorBuffer[offset++] = 0;  // totalFiles high = 0
+        errorBuffer[offset++] = 0;  // fileCount = 0
+        
+        clients.notifyAllBinary(NotificationType::FileSystem, errorBuffer, offset);
+    }
+
+    // Send binary result for file action (delete, rename, etc.)
+    static void sendBinaryFileActionResult(uint8_t action, bool success, uint8_t errorCode, const char* path = nullptr) {
+        static uint8_t resultBuffer[260];
+        size_t offset = 0;
+        uint8_t pathLen = path ? (uint8_t)strlen(path) : 0;
+        
+        resultBuffer[offset++] = MSG_FILE_ACTION_RESULT;
+        resultBuffer[offset++] = action;
+        resultBuffer[offset++] = success ? 0 : 1;
+        resultBuffer[offset++] = errorCode;
+        resultBuffer[offset++] = pathLen;
+        if (pathLen > 0) {
+            memcpy(resultBuffer + offset, path, pathLen);
+            offset += pathLen;
+        }
+        
+        clients.notifyAllBinary(NotificationType::FileSystem, resultBuffer, offset);
     }
     
     // Загрузка данных файла
@@ -640,47 +574,36 @@ public:
         
         // Проверяем существование файла
         if (!SD.exists(pathBuffer.c_str())) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"load\",\"error\":\"File not found\",\"path\":\"%s\"}", 
-                             pathBuffer.c_str());
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(7, false, 3, pathBuffer.c_str()); // 7=load, error 3=not found
             return true;
         }
         
         // STREAM file directly from SD to BLE (NO buffering entire file!)
-        // Uses minimal stack: static buffers only
-        
         File file = SD.open(pathBuffer.c_str(), FILE_READ);
         if (!file) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"load\",\"error\":\"Failed to open file\",\"path\":\"%s\"}", 
-                             pathBuffer.c_str());
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(7, false, 13, pathBuffer.c_str()); // error 13=failed to open
             return true;
         }
         
         size_t fileSize = file.size();
-        ESP_LOGI("FileCommands", "Streaming file: %zu bytes (streaming, NO full buffering!)", fileSize);
+        ESP_LOGI("FileCommands", "Streaming file: %zu bytes", fileSize);
         
         // Build header: [0xA0][pathLen:1][path][fileSize:4]
-        size_t pathLen = strlen(pathBuffer.c_str());
+        size_t fullPathLen = strlen(pathBuffer.c_str());
         const size_t MAX_HEADER_SIZE = 256;
         uint8_t header[MAX_HEADER_SIZE];
         
-        if (1 + 1 + pathLen + 4 > MAX_HEADER_SIZE) {
-            ESP_LOGE("FileCommands", "Path too long: %zu", pathLen);
+        if (1 + 1 + fullPathLen + 4 > MAX_HEADER_SIZE) {
             file.close();
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"load\",\"error\":\"Path too long\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(7, false, 14, "Path too long"); // error 14=path too long
             return true;
         }
         
         size_t offset = 0;
-        header[offset++] = 0xA0;  // FILE_CONTENT message type
-        header[offset++] = (uint8_t)pathLen;
-        memcpy(header + offset, pathBuffer.c_str(), pathLen);
-        offset += pathLen;
+        header[offset++] = 0xA0;  // MSG_FILE_CONTENT
+        header[offset++] = (uint8_t)fullPathLen;
+        memcpy(header + offset, pathBuffer.c_str(), fullPathLen);
+        offset += fullPathLen;
         
         // File size (4 bytes, little-endian)
         header[offset++] = (fileSize >> 0) & 0xFF;
@@ -691,23 +614,13 @@ public:
         size_t headerSize = offset;
         
         // TRUE STREAMING: Use BLE adapter's streaming method
-        // This reads file in small chunks and sends them immediately via BLE chunking
-        // No need to load entire file into memory - true streaming!
-        
-        // Get BLE adapter instance
         BleAdapter* bleAdapter = BleAdapter::getInstance();
         if (bleAdapter != nullptr) {
-            // Use streaming method - reads file parts and sends immediately
             bleAdapter->streamFileData(header, headerSize, file, fileSize);
             file.close();
-            ESP_LOGI("FileCommands", "File streaming started: %zu bytes", fileSize);
         } else {
-            // Fallback: use buffered approach if BLE adapter not available
-            ESP_LOGW("FileCommands", "BLE adapter not available, using buffered approach");
             file.close();
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"load\",\"error\":\"BLE adapter not available\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(7, false, 15, "BLE adapter not found"); // error 15=no adapter
         }
         
         return true;
@@ -715,18 +628,14 @@ public:
     
     static bool handleRemoveFile(const uint8_t* data, size_t len) {
         if (len < 2) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"delete\",\"success\":false,\"error\":\"Insufficient data\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(1, false, 1); // 1=delete, error 1=insufficient data
             return false;
         }
         
         uint8_t pathLength = data[0];
         uint8_t pathType = data[1];
         if (len < 2 + pathLength) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"delete\",\"success\":false,\"error\":\"Path length mismatch\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(1, false, 2); // error 2=path length mismatch
             return false;
         }
         
@@ -736,9 +645,7 @@ public:
         
         // Check if path exists
         if (!SD.exists(pathBuffer.c_str())) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"delete\",\"success\":false,\"path\":\"%s\",\"error\":\"File or directory not found\"}", pathBuffer.c_str());
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(1, false, 3, pathBuffer.c_str()); // error 3=not found
             return false;
         }
         
@@ -754,45 +661,32 @@ public:
             ok = SD.remove(pathBuffer.c_str());
         }
         
-        jsonBuffer.clear();
-        if (ok) {
-            jsonBuffer.printf("{\"action\":\"delete\",\"success\":true,\"path\":\"%s\"}", pathBuffer.c_str());
-        } else {
-            jsonBuffer.printf("{\"action\":\"delete\",\"success\":false,\"path\":\"%s\",\"error\":\"Delete failed\"}", pathBuffer.c_str());
-        }
-        clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+        sendBinaryFileActionResult(1, ok, ok ? 0 : 4, pathBuffer.c_str()); // error 4=delete failed
         return ok;
     }
     
     static bool handleRenameFile(const uint8_t* data, size_t len) {
         if (len < 3) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"rename\",\"success\":false,\"error\":\"Insufficient data\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(2, false, 1); // 2=rename, error 1=insufficient data
             return false;
         }
         
         uint8_t pathType = data[0];
         uint8_t fromLength = data[1];
         if (len < 2 + fromLength + 1) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"rename\",\"success\":false,\"error\":\"Invalid payload (to length missing)\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(2, false, 5); // error 5=to length missing
             return false;
         }
         
         const char* fromPtr = reinterpret_cast<const char*>(data + 2);
         uint8_t toLength = data[2 + fromLength];
         if (len < 3 + fromLength + toLength) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"rename\",\"success\":false,\"error\":\"Path length mismatch\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(2, false, 2); // error 2=path length mismatch
             return false;
         }
         const char* toPtr = reinterpret_cast<const char*>(data + 3 + fromLength);
         
         // Build full paths using helper functions
-        // Use pathBuffer for "from" path
         buildFullPath(pathType, fromPtr, fromLength, pathBuffer);
         
         // Use a temporary PathBuffer for "to" path (we need both paths)
@@ -801,30 +695,20 @@ public:
         
         bool ok = SD.exists(pathBuffer.c_str()) && SD.rename(pathBuffer.c_str(), toPathBuffer.c_str());
         
-        jsonBuffer.clear();
-        if (ok) {
-            jsonBuffer.printf("{\"action\":\"rename\",\"success\":true,\"from\":\"%s\",\"to\":\"%s\"}", pathBuffer.c_str(), toPathBuffer.c_str());
-        } else {
-            jsonBuffer.printf("{\"action\":\"rename\",\"success\":false,\"from\":\"%s\",\"to\":\"%s\",\"error\":\"Rename failed or source missing\"}", pathBuffer.c_str(), toPathBuffer.c_str());
-        }
-        clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+        sendBinaryFileActionResult(2, ok, ok ? 0 : 6, toPathBuffer.c_str()); // 2=rename, error 6=rename failed
         return ok;
     }
     
     static bool handleCreateDirectory(const uint8_t* data, size_t len) {
         if (len < 2) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"create-directory\",\"success\":false,\"error\":\"Insufficient data\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(3, false, 1); // 3=mkdir, error 1=insufficient data
             return false;
         }
         
         uint8_t pathLength = data[0];
         uint8_t pathType = data[1];
         if (len < 2 + pathLength) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"create-directory\",\"success\":false,\"error\":\"Path length mismatch\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(3, false, 2); // error 2=path length mismatch
             return false;
         }
         
@@ -844,21 +728,13 @@ public:
             }
         }
         
-        jsonBuffer.clear();
-        if (ok) {
-            jsonBuffer.printf("{\"action\":\"create-directory\",\"success\":true,\"path\":\"%s\"}", pathBuffer.c_str());
-        } else {
-            jsonBuffer.printf("{\"action\":\"create-directory\",\"success\":false,\"path\":\"%s\",\"error\":\"Create directory failed\"}", pathBuffer.c_str());
-        }
-        clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+        sendBinaryFileActionResult(3, ok, ok ? 0 : 7, pathBuffer.c_str()); // 3=mkdir, error 7=mkdir failed
         return ok;
     }
     
     static bool handleSaveToSignalsWithName(const uint8_t* data, size_t len) {
         if (len < 3) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"type\":\"FileSavedWithName\",\"error\":\"Insufficient data\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(4, false, 1); // 4=copy, error 1=insufficient data
             return false;
         }
         
@@ -868,17 +744,13 @@ public:
         uint8_t pathType = data[2];
         
         if (len < 3 + sourcePathLength + targetNameLength) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"type\":\"FileSavedWithName\",\"error\":\"Insufficient data for paths\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(4, false, 8); // error 8=path lengths mismatch
             return false;
         }
         
         // Extract source path
         if (sourcePathLength == 0 || sourcePathLength >= pathBuffer.capacity()) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"type\":\"FileSavedWithName\",\"error\":\"Invalid source path length\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(4, false, 9); // error 9=invalid source length
             return false;
         }
         
@@ -892,8 +764,27 @@ public:
         targetNameBuffer.clear();
         targetNameBuffer.append(targetName, targetNameLength);
         
-        ESP_LOGI("FileCommands", "SaveToSignalsWithName: sourcePath=%s, targetName=%s, pathType=%d", 
-                 pathBuffer.c_str(), targetNameBuffer.c_str(), pathType);
+        // Check if date is provided (4 bytes after target name)
+        uint32_t fileDate = 0;
+        bool hasDate = false;
+        size_t expectedLen = 3 + sourcePathLength + targetNameLength;
+        if (len >= expectedLen + 4) {
+            // Read date (Unix timestamp in seconds, little-endian)
+            fileDate = data[expectedLen] | 
+                      (data[expectedLen + 1] << 8) | 
+                      (data[expectedLen + 2] << 16) | 
+                      (data[expectedLen + 3] << 24);
+            hasDate = true;
+            ESP_LOGI("FileCommands", "Date bytes: %02X %02X %02X %02X -> timestamp=%lu", 
+                     data[expectedLen], data[expectedLen + 1], data[expectedLen + 2], data[expectedLen + 3],
+                     (unsigned long)fileDate);
+        } else {
+            ESP_LOGI("FileCommands", "No date provided: len=%zu, expected=%zu", len, expectedLen + 4);
+        }
+        
+        ESP_LOGI("FileCommands", "SaveToSignalsWithName: sourcePath=%s, targetName=%s, pathType=%d%s", 
+                 pathBuffer.c_str(), targetNameBuffer.c_str(), pathType,
+                 hasDate ? ", date provided" : "");
         
         // Build destination path using helper function
         static PathBuffer destPathBuffer;
@@ -903,10 +794,7 @@ public:
         
         // Check if source file exists
         if (!SD.exists(pathBuffer.c_str())) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"type\":\"FileSavedWithName\",\"error\":\"Source file not found\",\"path\":\"%s\"}", 
-                             pathBuffer.c_str());
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(4, false, 3, pathBuffer.c_str()); // error 3=not found
             return false;
         }
         
@@ -920,20 +808,14 @@ public:
         // Copy file from source to destination
         File sourceFile = SD.open(pathBuffer.c_str(), FILE_READ);
         if (!sourceFile) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"type\":\"FileSavedWithName\",\"error\":\"Failed to open source file\",\"path\":\"%s\"}", 
-                             pathBuffer.c_str());
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(4, false, 10, pathBuffer.c_str()); // error 10=failed to open source
             return false;
         }
         
         File destFile = SD.open(destPathBuffer.c_str(), FILE_WRITE);
         if (!destFile) {
             sourceFile.close();
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"type\":\"FileSavedWithName\",\"error\":\"Failed to create destination file\",\"path\":\"%s\"}", 
-                             destPathBuffer.c_str());
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(4, false, 11, destPathBuffer.c_str()); // error 11=failed to create dest
             return false;
         }
         
@@ -945,15 +827,104 @@ public:
         sourceFile.close();
         destFile.close();
         
-        ESP_LOGI("FileCommands", "File copied successfully: %s -> %s", pathBuffer.c_str(), destPathBuffer.c_str());
+        // Set file date if provided (must be done immediately after close, before releasing mutex)
+        if (hasDate && fileDate > 0) {
+            ESP_LOGI("FileCommands", "Setting file date: timestamp=%lu", (unsigned long)fileDate);
+            
+            // Manual conversion from Unix timestamp to FAT date/time (avoid gmtime stack issues)
+            uint32_t days = fileDate / 86400;
+            uint32_t seconds = fileDate % 86400;
+            
+            // Calculate year (simplified, good for 1980-2100)
+            uint32_t year = 1970;
+            uint32_t dayOfYear = days;
+            while (dayOfYear >= 365) {
+                bool isLeap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+                uint32_t daysInYear = isLeap ? 366 : 365;
+                if (dayOfYear >= daysInYear) {
+                    dayOfYear -= daysInYear;
+                    year++;
+                } else {
+                    break;
+                }
+            }
+            
+            // Calculate month and day
+            uint32_t month = 1;
+            uint32_t day = dayOfYear + 1;
+            const uint8_t daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+            bool isLeap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+            
+            for (uint32_t m = 0; m < 12; m++) {
+                uint32_t daysInM = daysInMonth[m];
+                if (m == 1 && isLeap) daysInM = 29;
+                if (day > daysInM) {
+                    day -= daysInM;
+                    month++;
+                } else {
+                    break;
+                }
+            }
+            
+            // Calculate hour, minute, second
+            uint32_t hour = seconds / 3600;
+            uint32_t minute = (seconds % 3600) / 60;
+            uint32_t second = seconds % 60;
+            
+            ESP_LOGI("FileCommands", "Converted date: %04lu-%02lu-%02lu %02lu:%02lu:%02lu", 
+                     (unsigned long)year, (unsigned long)month, (unsigned long)day,
+                     (unsigned long)hour, (unsigned long)minute, (unsigned long)second);
+            
+            if (year >= 1980 && year < 2108) {
+                FILINFO fno;
+                fno.fname[0] = '\0';
+                
+                // FAT date: bits 15-9=year-1980, 8-5=month, 4-0=day
+                fno.fdate = ((year - 1980) << 9) | (month << 5) | day;
+                // FAT time: bits 15-11=hour, 10-5=minute, 4-0=second/2
+                fno.ftime = (hour << 11) | (minute << 5) | (second / 2);
+                
+                ESP_LOGI("FileCommands", "FAT date=0x%04X, time=0x%04X", fno.fdate, fno.ftime);
+                
+                // Use FATFS directly with the destination path (no /sd prefix needed for f_utime)
+                // f_utime works with the path as used by SD library
+                ESP_LOGI("FileCommands", "Setting time on file: %s", destPathBuffer.c_str());
+                
+                // Try to set time using f_utime directly (doesn't require file to be open)
+                FRESULT res = f_utime(destPathBuffer.c_str(), &fno);
+                if (res == FR_OK) {
+                    ESP_LOGI("FileCommands", "File time set successfully");
+                } else {
+                    ESP_LOGW("FileCommands", "f_utime failed: %d, trying with file open", res);
+                    
+                    // Fallback: open file and try again
+                    FIL file;
+                    res = f_open(&file, destPathBuffer.c_str(), FA_WRITE | FA_OPEN_EXISTING);
+                    if (res == FR_OK) {
+                        // Try f_utime again with file open
+                        res = f_utime(destPathBuffer.c_str(), &fno);
+                        f_close(&file);
+                        
+                        if (res == FR_OK) {
+                            ESP_LOGI("FileCommands", "File time set successfully (with file open)");
+                        } else {
+                            ESP_LOGW("FileCommands", "f_utime failed even with file open: %d", res);
+                        }
+                    } else {
+                        ESP_LOGW("FileCommands", "Failed to open file for time setting: %d", res);
+                    }
+                }
+            } else {
+                ESP_LOGW("FileCommands", "Year %lu out of range (1980-2107)", (unsigned long)year);
+            }
+        }
+        
+        ESP_LOGI("FileCommands", "File copied successfully: %s -> %s%s", 
+                 pathBuffer.c_str(), destPathBuffer.c_str(),
+                 hasDate ? " (date preserved)" : "");
         
         // Send success response
-        jsonBuffer.clear();
-        jsonBuffer.printf("{\"type\":\"FileSavedWithName\",\"data\":{\"sourcePath\":\"%s\",\"targetName\":\"%s\",\"destPath\":\"%s\"}}",
-                         pathBuffer.c_str(),
-                         targetNameBuffer.c_str(),
-                         destPathBuffer.c_str());
-        clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+        sendBinaryFileActionResult(4, true, 0, destPathBuffer.c_str());
         
         return true;
     }
@@ -961,65 +932,51 @@ public:
     // Копирование файла
     static bool handleCopyFile(const uint8_t* data, size_t len) {
         if (len < 3) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"copy\",\"success\":false,\"error\":\"Insufficient data\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(4, false, 1); // 4=copy, error 1=insufficient data
             return false;
         }
         
         uint8_t pathType = data[0];
         uint8_t sourceLength = data[1];
         if (len < 2 + sourceLength + 1) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"copy\",\"success\":false,\"error\":\"Invalid payload (dest length missing)\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(4, false, 12); // error 12=dest length missing
             return false;
         }
         
         const char* sourcePtr = reinterpret_cast<const char*>(data + 2);
         uint8_t destLength = data[2 + sourceLength];
         if (len < 3 + sourceLength + destLength) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"copy\",\"success\":false,\"error\":\"Path length mismatch\"}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(4, false, 2); // error 2=path length mismatch
             return false;
         }
         const char* destPtr = reinterpret_cast<const char*>(data + 3 + sourceLength);
         
-        // Build full paths using helper functions
+        // Build full paths
         buildFullPath(pathType, sourcePtr, sourceLength, pathBuffer);
         
-        // Use a temporary PathBuffer for destination path
         static PathBuffer destPathBuffer;
         buildFullPath(pathType, destPtr, destLength, destPathBuffer);
         
-        // Check if source file exists
+        // Check if source exists
         if (!SD.exists(pathBuffer.c_str())) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"copy\",\"success\":false,\"error\":\"Source file not found\",\"source\":\"%s\"}", pathBuffer.c_str());
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(4, false, 3, pathBuffer.c_str()); // error 3=not found
             return false;
         }
         
-        // Copy file from source to destination
+        // Copy file
         File sourceFile = SD.open(pathBuffer.c_str(), FILE_READ);
         if (!sourceFile) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"copy\",\"success\":false,\"error\":\"Failed to open source file\",\"source\":\"%s\"}", pathBuffer.c_str());
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(4, false, 10, pathBuffer.c_str());
             return false;
         }
         
         File destFile = SD.open(destPathBuffer.c_str(), FILE_WRITE);
         if (!destFile) {
             sourceFile.close();
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"action\":\"copy\",\"success\":false,\"error\":\"Failed to create destination file\",\"dest\":\"%s\"}", destPathBuffer.c_str());
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryFileActionResult(4, false, 11, destPathBuffer.c_str());
             return false;
         }
         
-        // Copy file content
         while (sourceFile.available()) {
             destFile.write(sourceFile.read());
         }
@@ -1027,47 +984,267 @@ public:
         sourceFile.close();
         destFile.close();
         
-        ESP_LOGI("FileCommands", "File copied successfully: %s -> %s", pathBuffer.c_str(), destPathBuffer.c_str());
-        
-        // Send success response
-        jsonBuffer.clear();
-        jsonBuffer.printf("{\"action\":\"copy\",\"success\":true,\"source\":\"%s\",\"dest\":\"%s\"}", pathBuffer.c_str(), destPathBuffer.c_str());
-        clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
-        
+        sendBinaryFileActionResult(4, true, 0, destPathBuffer.c_str());
         return true;
     }
     
-    // Получение дерева директорий (только директории, рекурсивно)
+    // Перемещение файла (move) - поддерживает разные pathType для source и destination
+    // Format: [sourcePathType:1][destPathType:1][sourcePathLength:1][sourcePath:variable][destPathLength:1][destPath:variable]
+    static bool handleMoveFile(const uint8_t* data, size_t len) {
+        if (len < 4) {
+            sendBinaryFileActionResult(5, false, 1); // 5=move, error 1=insufficient data
+            return false;
+        }
+        
+        uint8_t sourcePathType = data[0];
+        uint8_t destPathType = data[1];
+        uint8_t sourceLength = data[2];
+        if (len < 3 + sourceLength + 1) {
+            sendBinaryFileActionResult(5, false, 12); // error 12=dest length missing
+            return false;
+        }
+        
+        const char* sourcePtr = reinterpret_cast<const char*>(data + 3);
+        uint8_t destLength = data[3 + sourceLength];
+        if (len < 4 + sourceLength + destLength) {
+            sendBinaryFileActionResult(5, false, 2); // error 2=path length mismatch
+            return false;
+        }
+        const char* destPtr = reinterpret_cast<const char*>(data + 4 + sourceLength);
+        
+        // Build full paths using respective pathTypes
+        buildFullPath(sourcePathType, sourcePtr, sourceLength, pathBuffer);
+        
+        static PathBuffer destPathBuffer;
+        buildFullPath(destPathType, destPtr, destLength, destPathBuffer);
+        
+        // Check if source exists
+        if (!SD.exists(pathBuffer.c_str())) {
+            sendBinaryFileActionResult(5, false, 3, pathBuffer.c_str()); // error 3=not found
+            return false;
+        }
+        
+        // If moving between different storages, we need to copy then delete
+        bool ok = false;
+        if (sourcePathType == destPathType) {
+            // Same storage - use rename (fast)
+            ok = SD.rename(pathBuffer.c_str(), destPathBuffer.c_str());
+        } else {
+            // Different storages - copy then delete
+            File sourceFile = SD.open(pathBuffer.c_str(), FILE_READ);
+            if (!sourceFile) {
+                sendBinaryFileActionResult(5, false, 10, pathBuffer.c_str()); // error 10=failed to open source
+                return false;
+            }
+            
+            File destFile = SD.open(destPathBuffer.c_str(), FILE_WRITE);
+            if (!destFile) {
+                sourceFile.close();
+                sendBinaryFileActionResult(5, false, 11, destPathBuffer.c_str()); // error 11=failed to create dest
+                return false;
+            }
+            
+            // Copy file content
+            while (sourceFile.available()) {
+                destFile.write(sourceFile.read());
+            }
+            
+            sourceFile.close();
+            destFile.close();
+            
+            // Delete source file
+            ok = SD.remove(pathBuffer.c_str());
+        }
+        
+        sendBinaryFileActionResult(5, ok, ok ? 0 : 6, destPathBuffer.c_str()); // 5=move, error 6=move failed
+        return ok;
+    }
+    
+    // Collect directory paths (recursive, stores paths for streaming)
+    static void collectDirectoryPaths(const char* basePath, std::vector<String>& paths) {
+        char fatfsPath[256];
+        snprintf(fatfsPath, sizeof(fatfsPath), "/sd%s", basePath);
+        
+        FF_DIR fatDir;
+        FILINFO fno;
+        FRESULT res = f_opendir(&fatDir, fatfsPath);
+        if (res != FR_OK) {
+            res = f_opendir(&fatDir, basePath);
+            if (res != FR_OK) {
+                return;
+            }
+        }
+        
+        uint16_t entriesProcessed = 0;
+        while (true) {
+            res = f_readdir(&fatDir, &fno);
+            if (res != FR_OK || fno.fname[0] == 0) {
+                break;
+            }
+            
+            // Skip . and ..
+            if (fno.fname[0] == '.' && (fno.fname[1] == '\0' || (fno.fname[1] == '.' && fno.fname[2] == '\0'))) {
+                continue;
+            }
+            
+            // Check if it's a directory
+            bool isDir = (fno.fname[0] != 0 && (fno.fattrib & AM_DIR) != 0);
+            
+            if (isDir) {
+                // Build full path
+                char dirPath[256];
+                if (strcmp(basePath, "/") == 0) {
+                    snprintf(dirPath, sizeof(dirPath), "/%s", fno.fname);
+                } else {
+                    snprintf(dirPath, sizeof(dirPath), "%s/%s", basePath, fno.fname);
+                }
+                
+                // Add to paths list
+                paths.push_back(String(dirPath));
+                
+                // Recurse into subdirectory
+                collectDirectoryPaths(dirPath, paths);
+            }
+            
+            entriesProcessed++;
+            // Yield every 10 entries to prevent watchdog timeout
+            if (entriesProcessed % 10 == 0) {
+                vTaskDelay(pdMS_TO_TICKS(5));
+            }
+        }
+        
+        f_closedir(&fatDir);
+    }
+    
+    // Get directory tree (only directories, recursive) - STREAMING VERSION
+    // Format: [0xA2][pathType:1][flags:1][totalDirs:2][dirCount:2][paths...]
+    // flags: bit 0 (0x01) = hasMore, bit 7 (0x80) = error
+    // For each path: [pathLen:1][path:pathLen]
     static bool handleGetDirectoryTree(const uint8_t* data, size_t len) {
         if (len < 1) {
-            jsonBuffer.clear();
-            jsonBuffer.printf("{\"type\":\"DirectoryTree\",\"data\":{\"error\":\"Insufficient data\"}}");
-            clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
+            sendBinaryDirectoryTreeError(1); // error 1=insufficient data
             return false;
         }
         
         uint8_t pathType = data[0];
-        
-        // Build base path
         buildBasePath(pathType, pathBuffer);
         
         ESP_LOGI("FileCommands", "Getting directory tree for pathType=%d, basePath='%s'", pathType, pathBuffer.c_str());
         
-        // Recursively build directory tree
-        jsonBuffer.clear();
-        jsonBuffer.append("{\"type\":\"DirectoryTree\",\"data\":{\"pathType\":");
-        jsonBuffer.printf("%d", pathType);
-        jsonBuffer.append(",\"directories\":[");
+        // Check memory
+        if (ESP.getFreeHeap() < 3000) {
+            sendBinaryDirectoryTreeError(1); // error 1=insufficient memory
+            return true;
+        }
         
-        bool hasDirectories = buildDirectoryTreeRecursive(pathBuffer.c_str(), jsonBuffer);
+        try {
+            // Collect all directory paths first
+            std::vector<String> paths;
+            collectDirectoryPaths(pathBuffer.c_str(), paths);
+            
+            uint16_t totalDirs = paths.size();
+            ESP_LOGI("FileCommands", "Collected %d directories, starting stream", totalDirs);
+            
+            // STREAMING: Use 2KB buffer, send multiple messages if needed
+            const size_t BUFFER_SIZE = 2048;
+            static uint8_t binaryBuffer[BUFFER_SIZE];
+            
+            uint16_t dirsSent = 0;
+            size_t pathIndex = 0;
+            bool hasMorePaths = true;
+            
+            while (hasMorePaths) {
+                size_t bufferOffset = 0;
+                
+                // Build message header
+                binaryBuffer[bufferOffset++] = MSG_DIRECTORY_TREE;  // 0xA2
+                binaryBuffer[bufferOffset++] = pathType;
+                
+                size_t flagsOffset = bufferOffset++;
+                size_t totalDirsOffset = bufferOffset;
+                bufferOffset += 2; // totalDirs (2 bytes)
+                size_t dirCountOffset = bufferOffset;
+                bufferOffset += 2; // dirCount (2 bytes)
+                
+                uint16_t dirsInThisMessage = 0;
+                
+                // Add paths to buffer until full or all paths processed
+                while (pathIndex < paths.size() && bufferOffset < BUFFER_SIZE - 260) { // Leave 260 bytes margin for path
+                    const String& path = paths[pathIndex];
+                    size_t pathLen = path.length();
+                    
+                    if (pathLen > 255) pathLen = 255; // Limit path length
+                    
+                    // Check if path fits
+                    if (bufferOffset + 1 + pathLen >= BUFFER_SIZE - 16) {
+                        // Buffer full, send this message and continue with next
+                        break;
+                    }
+                    
+                    binaryBuffer[bufferOffset++] = (uint8_t)pathLen;
+                    memcpy(binaryBuffer + bufferOffset, path.c_str(), pathLen);
+                    bufferOffset += pathLen;
+                    
+                    dirsInThisMessage++;
+                    dirsSent++;
+                    pathIndex++;
+                }
+                
+                // Check if more paths remaining
+                hasMorePaths = (pathIndex < paths.size());
+                
+                // Update flags and counts
+                binaryBuffer[flagsOffset] = hasMorePaths ? 0x01 : 0x00;
+                
+                // totalDirs: 0xFFFF if more coming, actual count if last message
+                if (hasMorePaths) {
+                    binaryBuffer[totalDirsOffset] = 0xFF;
+                    binaryBuffer[totalDirsOffset + 1] = 0xFF;
+                } else {
+                    binaryBuffer[totalDirsOffset] = totalDirs & 0xFF;
+                    binaryBuffer[totalDirsOffset + 1] = (totalDirs >> 8) & 0xFF;
+                }
+                
+                // dirCount (little-endian)
+                binaryBuffer[dirCountOffset] = dirsInThisMessage & 0xFF;
+                binaryBuffer[dirCountOffset + 1] = (dirsInThisMessage >> 8) & 0xFF;
+                
+                // Send this message
+                if (dirsInThisMessage > 0 || !hasMorePaths) {
+                    clients.notifyAllBinary(NotificationType::FileSystem, binaryBuffer, bufferOffset);
+                    ESP_LOGI("FileCommands", "Directory tree chunk: %d dirs (total sent: %d/%d)", 
+                             dirsInThisMessage, dirsSent, totalDirs);
+                    
+                    // Small delay to allow mobile app to process
+                    if (hasMorePaths) {
+                        vTaskDelay(pdMS_TO_TICKS(100));
+                    }
+                }
+            }
+            
+            ESP_LOGI("FileCommands", "Directory tree stream complete: %d directories sent", totalDirs);
+            return true;
+            
+        } catch (...) {
+            sendBinaryDirectoryTreeError(5); // error 5=unknown error
+            return true;
+        }
+    }
+    
+    // Send binary error response for directory tree
+    static void sendBinaryDirectoryTreeError(uint8_t errorCode) {
+        static uint8_t errorBuffer[16];
+        size_t offset = 0;
         
-        jsonBuffer.append("]}}");
+        errorBuffer[offset++] = MSG_DIRECTORY_TREE;
+        errorBuffer[offset++] = 0; // pathType (unknown)
+        errorBuffer[offset++] = 0x80 | (errorCode & 0x7F);  // Error flag + error code
+        errorBuffer[offset++] = 0;  // totalDirs low = 0
+        errorBuffer[offset++] = 0;  // totalDirs high = 0
+        errorBuffer[offset++] = 0;  // dirCount low = 0
+        errorBuffer[offset++] = 0;  // dirCount high = 0
         
-        // Send directory tree via JSON message
-        clients.enqueueMessage(NotificationType::FileSystem, jsonBuffer.c_str());
-        
-        ESP_LOGI("FileCommands", "Directory tree sent: %d directories", hasDirectories ? 1 : 0);
-        return true;
+        clients.notifyAllBinary(NotificationType::FileSystem, errorBuffer, offset);
     }
     
     // Загрузка файла (upload) с чанкингом

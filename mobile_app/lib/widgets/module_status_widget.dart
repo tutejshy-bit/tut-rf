@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import '../l10n/app_localizations.dart';
 import '../services/cc1101/cc1101_calculator.dart';
+import '../theme/app_colors.dart';
 
 /// Компактный виджет для отображения состояния модулей CC1101
 class ModuleStatusWidget extends StatelessWidget {
@@ -49,9 +51,10 @@ class ModuleStatusWidget extends StatelessWidget {
         ),
         const SizedBox(width: 8),
         Text(
-          'Device Status',
+          AppLocalizations.of(context)!.deviceStatus,
           style: Theme.of(context).textTheme.titleMedium?.copyWith(
             fontWeight: FontWeight.bold,
+            color: AppColors.primaryText,
           ),
         ),
         const Spacer(),
@@ -104,15 +107,16 @@ class ModuleStatusWidget extends StatelessWidget {
           Row(
             children: [
               Icon(
-                Icons.radio,
+                Icons.settings_input_antenna,
                 size: 18,
                 color: _getModeColor(context, mode),
               ),
               const SizedBox(width: 8),
               Text(
-                'Module $moduleId',
+                AppLocalizations.of(context)!.subGhzModule(moduleId + 1),
                 style: Theme.of(context).textTheme.titleSmall?.copyWith(
                   fontWeight: FontWeight.w600,
+                  color: AppColors.primaryText,
                 ),
               ),
               const Spacer(),
@@ -140,7 +144,7 @@ class ModuleStatusWidget extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
       ),
       child: Text(
-        mode,
+        _getLocalizedMode(context, mode),
         style: Theme.of(context).textTheme.bodySmall?.copyWith(
           fontWeight: FontWeight.w500,
           color: _getModeColor(context, mode),
@@ -158,18 +162,18 @@ class ModuleStatusWidget extends StatelessWidget {
             Expanded(
               child: _buildInfoItem(
                 context,
-                Icons.signal_cellular_alt,
-                '${config.frequency.toStringAsFixed(1)} MHz',
-                'Frequency',
+                Icons.graphic_eq,
+                '${config.frequency.toStringAsFixed(1)} ${AppLocalizations.of(context)!.mhz}',
+                AppLocalizations.of(context)!.frequency,
               ),
             ),
             const SizedBox(width: 8),
             Expanded(
               child: _buildInfoItem(
                 context,
-                Icons.tune,
-                config.modulationName,
-                'Modulation',
+                Icons.radio,
+                _getLocalizedModulationName(context, config.modulationName),
+                AppLocalizations.of(context)!.modulation,
               ),
             ),
           ],
@@ -183,17 +187,17 @@ class ModuleStatusWidget extends StatelessWidget {
               child: _buildInfoItem(
                 context,
                 Icons.speed,
-                '${(config.dataRate / 1000).toStringAsFixed(1)} kbps',
-                'Data Rate',
+                '${(config.dataRate / 1000).toStringAsFixed(1)} ${AppLocalizations.of(context)!.kbps}',
+                AppLocalizations.of(context)!.dataRate,
               ),
             ),
             const SizedBox(width: 8),
             Expanded(
               child: _buildInfoItem(
                 context,
-                Icons.signal_cellular_4_bar,
-                '${(config.bandwidth / 1000).toStringAsFixed(1)} kHz',
-                'Bandwidth',
+                Icons.straighten,
+                '${(config.bandwidth / 1000).toStringAsFixed(1)} ${AppLocalizations.of(context)!.khz}',
+                AppLocalizations.of(context)!.bandwidth,
               ),
             ),
           ],
@@ -204,12 +208,12 @@ class ModuleStatusWidget extends StatelessWidget {
           Row(
             children: [
               Expanded(
-                child: _buildInfoItem(
-                  context,
-                  Icons.tune,
-                  '${(config.deviation / 1000).toStringAsFixed(2)} kHz',
-                  'Deviation',
-                ),
+              child: _buildInfoItem(
+                context,
+                Icons.tune,
+                '${(config.deviation / 1000).toStringAsFixed(2)} ${AppLocalizations.of(context)!.khz}',
+                AppLocalizations.of(context)!.deviation,
+              ),
               ),
               const Spacer(),
             ],
@@ -274,7 +278,7 @@ class ModuleStatusWidget extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Settings Parse Error',
+                  AppLocalizations.of(context)!.settingsParseError,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     fontWeight: FontWeight.w500,
                     color: Theme.of(context).colorScheme.error,
@@ -295,21 +299,46 @@ class ModuleStatusWidget extends StatelessWidget {
     );
   }
 
-  Color _getModeColor(BuildContext context, String mode) {
+  String _getLocalizedMode(BuildContext context, String mode) {
+    final l10n = AppLocalizations.of(context)!;
     switch (mode.toLowerCase()) {
       case 'idle':
-        return Colors.grey;
+        return l10n.statusIdle;
       case 'record':
       case 'recording':
-        return Colors.red;
+      case 'recordsignal':
+        return l10n.statusRecording;
       case 'transmit':
       case 'transmitting':
-        return Colors.green;
+        return l10n.statusTransmitting;
       case 'scan':
       case 'scanning':
-        return Colors.blue;
+      case 'detectsignal':
+        return l10n.statusScanning;
       default:
-        return Theme.of(context).colorScheme.primary;
+        return mode;
     }
+  }
+
+  String _getLocalizedModulationName(BuildContext context, String modulationName) {
+    final l10n = AppLocalizations.of(context)!;
+    switch (modulationName) {
+      case 'ASK/OOK':
+        return l10n.modulationAskOok;
+      case '2-FSK':
+        return l10n.modulation2Fsk;
+      case '4-FSK':
+        return l10n.modulation4Fsk;
+      case 'GFSK':
+        return l10n.modulationGfsk;
+      case 'MSK':
+        return l10n.modulationMsk;
+      default:
+        return modulationName;
+    }
+  }
+
+  Color _getModeColor(BuildContext context, String mode) {
+    return AppColors.getModuleStatusColor(mode);
   }
 }

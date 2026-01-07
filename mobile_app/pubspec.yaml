@@ -1,5 +1,5 @@
 name: evilcrow_rf2_controller
-description: Mobile app for controlling Evil Crow RF v2 device via BLE
+description: Tut RF - Mobile app for controlling RF devices via BLE
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -9,6 +9,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
   cupertino_icons: ^1.0.2
   flutter_blue_plus: ^1.31.15
   permission_handler: ^11.3.1
@@ -16,6 +18,8 @@ dependencies:
   shared_preferences: ^2.2.2
   file_picker: ^8.0.0
   path_provider: ^2.1.1
+  intl: any
+  google_fonts: ^6.1.0
 
 dev_dependencies:
   flutter_test:
@@ -26,4 +30,5 @@ flutter:
   uses-material-design: true
   assets:
     - assets/images/
+  generate: true
 

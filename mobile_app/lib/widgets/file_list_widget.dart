@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import '../l10n/app_localizations.dart';
 import '../providers/ble_provider.dart';
+import '../theme/app_colors.dart';
 
 enum FileListMode {
   browse,           // Просмотр файлов с возможностью действий
@@ -90,9 +92,15 @@ class _FileListWidgetState extends State<FileListWidget> {
 
   @override
   Widget build(BuildContext context) {
+    // Для local mode используем более темный фон
+    final cardColor = widget.mode == FileListMode.local 
+        ? AppColors.primaryBackground 
+        : Theme.of(context).cardTheme.color;
+    
     return Card(
       elevation: widget.showHeader ? 1 : 0,  // Remove elevation if header is hidden
       margin: widget.showHeader ? null : EdgeInsets.zero,  // Remove margin if header is hidden
+      color: cardColor,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -103,13 +111,13 @@ class _FileListWidgetState extends State<FileListWidget> {
           // File List
           Expanded(
             child: widget.isLoading
-                    ? const Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            CircularProgressIndicator(),
-                            SizedBox(height: 16),
-                            Text('Loading files...'),
+                    ?           Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text(AppLocalizations.of(context)!.loadingFiles),
                           ],
                         ),
                       )
@@ -189,7 +197,7 @@ class _FileListWidgetState extends State<FileListWidget> {
             if (widget.currentPath != '/' && widget.onNavigateUp != null)
               IconButton(
                 onPressed: widget.isLoading ? null : widget.onNavigateUp,
-                icon: const Icon(Icons.arrow_upward),
+                icon: const Icon(Icons.arrow_upward, color: AppColors.primaryText),
                 tooltip: 'Go Up',
                 iconSize: 20,
               ),
@@ -202,14 +210,17 @@ class _FileListWidgetState extends State<FileListWidget> {
                         height: 20,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Icon(Icons.refresh),
+                    : const Icon(Icons.refresh, color: AppColors.primaryText),
                 tooltip: 'Refresh',
                 iconSize: 20,
               ),
             // Multi-select mode toggle
             IconButton(
               onPressed: widget.isLoading ? null : _toggleMultiSelectMode,
-              icon: Icon(widget.isMultiSelectMode ? Icons.checklist : Icons.checklist_outlined),
+              icon: Icon(
+                widget.isMultiSelectMode ? Icons.checklist : Icons.checklist_outlined,
+                color: AppColors.primaryText,
+              ),
               tooltip: widget.isMultiSelectMode ? 'Exit Multi-Select' : 'Multi-Select',
               iconSize: 20,
             ),
@@ -227,24 +238,24 @@ class _FileListWidgetState extends State<FileListWidget> {
           Icon(
             widget.mode == FileListMode.local ? Icons.folder_open : Icons.folder_open,
             size: 64,
-            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.4),
+            color: AppColors.secondaryText,
           ),
           const SizedBox(height: 16),
           Text(
-            widget.mode == FileListMode.local ? 'No recorded files' : 'No files found',
+                widget.mode == FileListMode.local ? AppLocalizations.of(context)!.noRecordedFiles : AppLocalizations.of(context)!.noFilesFound,
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+              color: AppColors.secondaryText,
             ),
           ),
           const SizedBox(height: 8),
           Text(
             widget.mode == FileListMode.local
-                ? 'Start recording to capture signals'
+                ? AppLocalizations.of(context)!.startRecordingToCaptureSignals
                 : widget.mode == FileListMode.browse 
                     ? 'Connect to device to see files'
                     : 'No files available for selection',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
+              color: AppColors.secondaryText,
             ),
           ),
         ],
@@ -316,14 +327,14 @@ class _FileListWidgetState extends State<FileListWidget> {
               height: 32,
               child: Icon(
                 Icons.folder,
-                color: Theme.of(context).colorScheme.primary,
+                color: AppColors.primaryText,
                 size: 24,
               ),
               )
           : Container(
               padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.secondary.withOpacity(0.1),
+                color: AppColors.secondaryBackground,
                 borderRadius: BorderRadius.circular(6),
               ),
               child: _getFileIcon(file.name),
@@ -348,7 +359,7 @@ class _FileListWidgetState extends State<FileListWidget> {
             Text(
               file.sizeFormatted,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                color: AppColors.secondaryText,
                 fontSize: 11,
               ),
             ),
@@ -356,7 +367,7 @@ class _FileListWidgetState extends State<FileListWidget> {
                   Text(
                     fileDate,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
+                      color: AppColors.secondaryText,
                       fontSize: 10,
                     ),
                   )
@@ -364,7 +375,7 @@ class _FileListWidgetState extends State<FileListWidget> {
             Text(
               fileTime,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
+                color: AppColors.secondaryText,
                 fontSize: 10,
               ),
             ),
@@ -380,7 +391,7 @@ class _FileListWidgetState extends State<FileListWidget> {
     if (file.isDirectory) {
       return Icon(
         Icons.chevron_right,
-        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.4),
+        color: AppColors.secondaryText,
       );
     }
 
@@ -390,7 +401,7 @@ class _FileListWidgetState extends State<FileListWidget> {
       return IconButton(
         icon: Icon(
           isSelected ? Icons.check_circle : Icons.check_circle_outline,
-          color: isSelected ? Theme.of(context).colorScheme.primary : null,
+          color: isSelected ? AppColors.primaryAccent : AppColors.primaryText,
         ),
         onPressed: () => _toggleFileSelection(file.name),
         tooltip: isSelected ? 'Deselect file' : 'Select file',
@@ -400,7 +411,7 @@ class _FileListWidgetState extends State<FileListWidget> {
 
     if (isSelectable) {
       return IconButton(
-        icon: const Icon(Icons.check_circle_outline),
+        icon: const Icon(Icons.check_circle_outline, color: AppColors.primaryText),
         onPressed: () => widget.onFileSelected?.call(file),
         tooltip: 'Select file',
         iconSize: 20,
@@ -459,89 +470,131 @@ class _FileListWidgetState extends State<FileListWidget> {
       return;
     }
 
-       showModalBottomSheet(
-         context: context,
-         builder: (context) => Container(
-           padding: const EdgeInsets.all(16),
-           child: Column(
-             mainAxisSize: MainAxisSize.min,
-             children: [
-               Text(
-                 file.name,
-                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                   fontWeight: FontWeight.bold,
-                 ),
-                 textAlign: TextAlign.center,
-                 maxLines: 2,
-                 overflow: TextOverflow.ellipsis,
-               ),
-               const SizedBox(height: 16),
-               // Основные действия в одной строке
-               Row(
-                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                 children: [
-                   if (_isTransmittableFile(file.name))
-                     _buildCompactActionButton(
-                       context,
-                       icon: Icons.send,
-                       label: 'Send',
-                       onPressed: () {
-                         Navigator.pop(context);
-                         widget.onFileAction?.call(file, 'transmit');
-                       },
-                     ),
-                   if ((widget.mode == FileListMode.local || widget.currentPathType == 3) && _isTransmittableFile(file.name))
-                     _buildCompactActionButton(
-                       context,
-                       icon: Icons.save,
-                       label: 'Save',
-                       onPressed: () {
-                         Navigator.pop(context);
-                         widget.onFileAction?.call(file, 'save_to_signals');
-                       },
-                     ),
-                   _buildCompactActionButton(
-                     context,
-                     icon: Icons.delete,
-                     label: 'Delete',
-                     isDestructive: true,
-                     onPressed: () {
-                       Navigator.pop(context);
-                       widget.onFileAction?.call(file, 'delete');
-                     },
-                   ),
-                 ],
-               ),
-               const SizedBox(height: 12),
-               // Дополнительные действия
-               Row(
-                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                 children: [
-                   _buildCompactActionButton(
-                     context,
-                     icon: Icons.visibility,
-                     label: 'View',
-                     onPressed: () {
-                       Navigator.pop(context);
-                       widget.onFileSelected?.call(file);
-                     },
-                   ),
-                   _buildCompactActionButton(
-                     context,
-                     icon: Icons.download,
-                     label: 'Download',
-                     onPressed: () {
-                       Navigator.pop(context);
-                       widget.onFileAction?.call(file, 'download');
-                     },
-                   ),
-                   _buildCompactActionButton(
-                     context,
-                     icon: Icons.copy,
-                     label: 'Copy',
-                     onPressed: () {
-                       Navigator.pop(context);
-                       widget.onFileAction?.call(file, 'copy');
+    // Для режима local (экран записи) показываем только view/save/transmit
+    final isRecordScreen = widget.mode == FileListMode.local;
+    
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              file.name,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: AppColors.primaryText,
+              ),
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 16),
+            if (isRecordScreen) ...[
+              // Для экрана записи: только view/save/transmit
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  _buildCompactActionButton(
+                    context,
+                    icon: Icons.visibility,
+                    label: AppLocalizations.of(context)!.view,
+                    onPressed: () {
+                      Navigator.pop(context);
+                      widget.onFileSelected?.call(file);
+                    },
+                  ),
+                  if (_isTransmittableFile(file.name))
+                    _buildCompactActionButton(
+                      context,
+                      icon: Icons.save,
+                      label: AppLocalizations.of(context)!.save,
+                      onPressed: () {
+                        Navigator.pop(context);
+                        widget.onFileAction?.call(file, 'save_to_signals');
+                      },
+                    ),
+                  if (_isTransmittableFile(file.name))
+                    _buildCompactActionButton(
+                      context,
+                      icon: Icons.send,
+                      label: AppLocalizations.of(context)!.transmitSignal,
+                      onPressed: () {
+                        Navigator.pop(context);
+                        widget.onFileAction?.call(file, 'transmit');
+                      },
+                    ),
+                ],
+              ),
+            ] else ...[
+              // Для других экранов: все действия
+              // Основные действия в одной строке
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  if (_isTransmittableFile(file.name))
+                    _buildCompactActionButton(
+                      context,
+                      icon: Icons.send,
+                      label: AppLocalizations.of(context)!.send,
+                      onPressed: () {
+                        Navigator.pop(context);
+                        widget.onFileAction?.call(file, 'transmit');
+                      },
+                    ),
+                  if ((widget.mode == FileListMode.local || widget.currentPathType == 3) && _isTransmittableFile(file.name))
+                    _buildCompactActionButton(
+                      context,
+                      icon: Icons.save,
+                      label: AppLocalizations.of(context)!.save,
+                      onPressed: () {
+                        Navigator.pop(context);
+                        widget.onFileAction?.call(file, 'save_to_signals');
+                      },
+                    ),
+                  _buildCompactActionButton(
+                    context,
+                    icon: Icons.delete,
+                    label: AppLocalizations.of(context)!.delete,
+                    isDestructive: true,
+                    onPressed: () {
+                      Navigator.pop(context);
+                      widget.onFileAction?.call(file, 'delete');
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              // Дополнительные действия
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  _buildCompactActionButton(
+                    context,
+                    icon: Icons.visibility,
+                    label: AppLocalizations.of(context)!.view,
+                    onPressed: () {
+                      Navigator.pop(context);
+                      widget.onFileSelected?.call(file);
+                    },
+                  ),
+                  _buildCompactActionButton(
+                    context,
+                    icon: Icons.download,
+                    label: AppLocalizations.of(context)!.downloadFile,
+                    onPressed: () {
+                      Navigator.pop(context);
+                      widget.onFileAction?.call(file, 'download');
+                    },
+                  ),
+                  _buildCompactActionButton(
+                    context,
+                    icon: Icons.copy,
+                    label: AppLocalizations.of(context)!.copyFile,
+                    onPressed: () {
+                      Navigator.pop(context);
+                      widget.onFileAction?.call(file, 'copy');
                     },
                   ),
                 ],
@@ -554,7 +607,7 @@ class _FileListWidgetState extends State<FileListWidget> {
                   _buildCompactActionButton(
                     context,
                     icon: Icons.drive_file_rename_outline,
-                    label: 'Rename',
+                    label: AppLocalizations.of(context)!.renameFile,
                     onPressed: () {
                       Navigator.pop(context);
                       widget.onFileAction?.call(file, 'rename');
@@ -563,7 +616,7 @@ class _FileListWidgetState extends State<FileListWidget> {
                   _buildCompactActionButton(
                     context,
                     icon: Icons.drive_file_move,
-                    label: 'Move',
+                    label: AppLocalizations.of(context)!.moveFile,
                     onPressed: () {
                       Navigator.pop(context);
                       widget.onFileAction?.call(file, 'move');
@@ -572,9 +625,10 @@ class _FileListWidgetState extends State<FileListWidget> {
                 ],
               ),
             ],
-          ),
+          ],
         ),
-      );
+      ),
+    );
   }
 
   void _showDirectoryContextMenu(dynamic directory) {
@@ -589,6 +643,7 @@ class _FileListWidgetState extends State<FileListWidget> {
               directory.name,
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                 fontWeight: FontWeight.bold,
+                color: AppColors.primaryText,
               ),
               textAlign: TextAlign.center,
               maxLines: 2,
@@ -602,7 +657,7 @@ class _FileListWidgetState extends State<FileListWidget> {
                 _buildCompactActionButton(
                   context,
                   icon: Icons.drive_file_rename_outline,
-                  label: 'Rename',
+                  label: AppLocalizations.of(context)!.renameDirectory,
                   onPressed: () {
                     Navigator.pop(context);
                     widget.onFileAction?.call(directory, 'rename');
@@ -611,7 +666,7 @@ class _FileListWidgetState extends State<FileListWidget> {
                 _buildCompactActionButton(
                   context,
                   icon: Icons.delete,
-                  label: 'Delete',
+                  label: AppLocalizations.of(context)!.delete,
                   isDestructive: true,
                   onPressed: () {
                     Navigator.pop(context);
@@ -621,7 +676,7 @@ class _FileListWidgetState extends State<FileListWidget> {
                 _buildCompactActionButton(
                   context,
                   icon: Icons.drive_file_move,
-                  label: 'Move',
+                  label: AppLocalizations.of(context)!.moveDirectory,
                   onPressed: () {
                     Navigator.pop(context);
                     widget.onFileAction?.call(directory, 'move');
@@ -650,11 +705,11 @@ class _FileListWidgetState extends State<FileListWidget> {
           icon: Icon(icon),
           style: IconButton.styleFrom(
             backgroundColor: isDestructive 
-                ? Colors.red.withOpacity(0.1)
-                : Theme.of(context).colorScheme.primary.withOpacity(0.1),
+                ? AppColors.error.withValues(alpha: 0.1)
+                : AppColors.primaryAccent.withValues(alpha: 0.1),
             foregroundColor: isDestructive 
-                ? Colors.red
-                : Theme.of(context).colorScheme.primary,
+                ? AppColors.error
+                : AppColors.primaryAccent,
           ),
           iconSize: 24,
         ),
@@ -664,8 +719,8 @@ class _FileListWidgetState extends State<FileListWidget> {
           style: Theme.of(context).textTheme.bodySmall?.copyWith(
             fontSize: 10,
             color: isDestructive 
-                ? Colors.red
-                : Theme.of(context).colorScheme.onSurface,
+                ? AppColors.error
+                : AppColors.primaryText,
           ),
         ),
       ],
@@ -677,15 +732,18 @@ class _FileListWidgetState extends State<FileListWidget> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Full Path'),
+        title: const Text(
+          'Full Path',
+          style: TextStyle(color: AppColors.primaryText),
+        ),
         content: SelectableText(
           widget.currentPath ?? '/',
-          style: Theme.of(context).textTheme.bodyMedium,
+          style: const TextStyle(color: AppColors.primaryText),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Close'),
+            child: Text(AppLocalizations.of(context)!.ok),
           ),
         ],
       ),
@@ -697,43 +755,46 @@ class _FileListWidgetState extends State<FileListWidget> {
     
     switch (extension) {
       case 'sub':
-        return Image.asset(
-          'assets/images/flipper_subghz.png',
-          width: 20,
-          height: 20,
-          errorBuilder: (context, error, stackTrace) {
-            return Icon(
-              Icons.radio,
-              color: Theme.of(context).colorScheme.secondary,
-              size: 20,
-            );
-          },
+        return ColorFiltered(
+          colorFilter: ColorFilter.mode(AppColors.primaryText, BlendMode.srcIn),
+          child: Image.asset(
+            'assets/images/flipper_subghz.png',
+            width: 20,
+            height: 20,
+            errorBuilder: (context, error, stackTrace) {
+              return Icon(
+                Icons.folder,
+                color: AppColors.primaryText,
+                size: 20,
+              );
+            },
+          ),
         );
       case 'txt':
       case 'log':
         return Icon(
           Icons.description,
-          color: Theme.of(context).colorScheme.secondary,
+          color: AppColors.primaryText,
           size: 20,
         );
       case 'json':
         return Icon(
           Icons.code,
-          color: Theme.of(context).colorScheme.secondary,
+          color: AppColors.primaryText,
           size: 20,
         );
       case 'bin':
       case 'hex':
         return Icon(
           Icons.memory,
-          color: Theme.of(context).colorScheme.secondary,
+          color: AppColors.primaryText,
           size: 20,
         );
       case 'wav':
       case 'mp3':
         return Icon(
           Icons.audiotrack,
-          color: Theme.of(context).colorScheme.secondary,
+          color: AppColors.primaryText,
           size: 20,
         );
       case 'jpg':
@@ -742,20 +803,20 @@ class _FileListWidgetState extends State<FileListWidget> {
       case 'gif':
         return Icon(
           Icons.image,
-          color: Theme.of(context).colorScheme.secondary,
+          color: AppColors.primaryText,
           size: 20,
         );
       case 'zip':
       case 'rar':
         return Icon(
           Icons.archive,
-          color: Theme.of(context).colorScheme.secondary,
+          color: AppColors.primaryText,
           size: 20,
         );
       default:
         return Icon(
           Icons.insert_drive_file,
-          color: Theme.of(context).colorScheme.secondary,
+          color: AppColors.primaryText,
           size: 20,
         );
     }
